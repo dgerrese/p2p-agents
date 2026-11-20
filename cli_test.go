@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -109,6 +110,7 @@ func TestResolvePeer(t *testing.T) {
 // fakeAPI is one pending request with code 123456 and a node-like 3-try limit.
 type fakeAPI struct {
 	NodeAPI
+	mu                 sync.Mutex
 	wrong              int
 	accepted, rejected bool
 	peers              []p2p.PeerStatus
@@ -118,15 +120,28 @@ type fakeAPI struct {
 const fakePub = "aaaaaaaabbbbbbbbccccccccdddddddd"
 
 func (f *fakeAPI) Requests() ([]p2p.PairRequest, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.gone {
 		return nil, nil
 	}
 	return []p2p.PairRequest{{ID: "r1", PeerPub: fakePub, PeerName: "bob"}}, nil
 }
 func (f *fakeAPI) VerifyCodeFor(string) (string, error) { return "123456", nil }
-func (f *fakeAPI) Peers() ([]p2p.PeerStatus, error)     { return f.peers, nil }
-func (f *fakeAPI) Reject(string) error                  { f.rejected = true; return nil }
+func (f *fakeAPI) Peers() ([]p2p.PeerStatus, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.peers, nil
+}
+func (f *fakeAPI) Reject(string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rejected = true
+	return nil
+}
 func (f *fakeAPI) Accept(_, typed string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.gone {
 		return p2p.ErrNoRequest
 	}
@@ -204,7 +219,9 @@ func TestPromptSurfacesRemoteRejection(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { _, err := prompt(t, f, "123456\n"); done <- err }()
 	time.Sleep(100 * time.Millisecond)
+	f.mu.Lock()
 	f.gone = true // pair_no arrived: request gone, peer never added
+	f.mu.Unlock()
 	select {
 	case err := <-done:
 		if err == nil || !strings.Contains(err.Error(), "rejected") {

@@ -108,7 +108,7 @@ func liveRoundTrip(t *testing.T, lanOnly bool) {
 		mu.Unlock()
 		old(dir, ev)
 	}
-	defer func() { debugHook = old }()
+	t.Cleanup(func() { debugHook = old }) // registered before the nodes, so it runs after they shut down
 
 	a, aPub := liveNode(t, lanOnly)
 	b, bPub := liveNode(t, lanOnly)

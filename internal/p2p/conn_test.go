@@ -301,3 +301,19 @@ func TestLANOnlyNoRelays(t *testing.T) {
 		t.Fatalf("default config: err=%v relays built=%d", err, dialed)
 	}
 }
+
+func TestLANOnlyNoSTUN(t *testing.T) {
+	for _, lanOnly := range []bool{true, false} {
+		st := &Store{Dir: t.TempDir()}
+		if err := st.SaveConfig(Config{LANOnly: lanOnly}); err != nil {
+			t.Fatal(err)
+		}
+		n, err := NewNode(st, NewMemBus().Join(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := len(n.stun) == 0; got != lanOnly {
+			t.Fatalf("lan_only=%v: stun=%v", lanOnly, n.stun)
+		}
+	}
+}

@@ -103,6 +103,9 @@ func NewNode(st *Store, lan, relay Signal) (*Node, error) {
 		invites: map[string]*invite{}, reqs: map[string]*pairReq{}, seen: map[string]bool{},
 		conns: map[string]*peerConn{}, dials: map[string]*dialState{}, acks: map[string]chan string{},
 	}
+	if cfg.LANOnly { // STUN would disclose the public IP; host candidates suffice on a LAN
+		n.stun = nil
+	}
 	return n, n.resubscribe()
 }
 

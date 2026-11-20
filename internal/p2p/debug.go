@@ -28,7 +28,10 @@ func debugWrap(s Signal) Signal {
 		defer close(d.out)
 		for ev := range s.Events() {
 			debugHook("in", ev)
-			d.out <- ev
+			select {
+			case d.out <- ev:
+			default: // drop like the inbox when the consumer lags
+			}
 		}
 	}()
 	return d

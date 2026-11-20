@@ -53,14 +53,16 @@ There is no accept tool. `pair_invite` and `pair_join` only start pairing; the o
 
 | Who | Sees | Does not see |
 |---|---|---|
-| Nostr relay | Your IP, that you subscribe to some random-looking mailbox keys, event timing and size | Your identity key, who the peer is, any link between events (each event uses a fresh throwaway key, mailboxes rotate hourly), content |
+| Nostr relay | Your IP, that you subscribe to some random-looking mailbox keys, event timing and size | Your identity key, who the peer is, content. Each event uses a fresh throwaway sender key and carries no identity |
 | LAN observer (multicast) | The same sealed events, plus that two hosts are talking | Identities, content |
 | STUN server | Your public IP when a connection is set up | Content, who you talk to |
 | Peer | Your IP address (direct WebRTC connection), name, and what you send | Your other peers |
 
+Events to one pair's mailbox share a `p` tag for up to an hour, so a relay can link them and see the volume and timing of that pair's signaling in that hour. Mailboxes rotate hourly and differ per pair, so events are not linkable across hours or across pairs.
+
 Outer events are kind 21059, all padded to one fixed size, so length reveals nothing. Message content is end to end encrypted by the WebRTC data channel and never touches relays.
 
-IP visibility: a direct peer connection exposes each side's IP to the other. Set `lan_only` to keep everything on the local network: no relays are used, no relay learns your IP.
+IP visibility: a direct peer connection exposes each side's IP to the other. Set `lan_only` to keep everything on the local network: no relays and no STUN are used, so nothing outside the LAN learns your IP. Only peers on the same network can connect.
 
 Config is `~/.config/p2p-agents/config.json` (override the directory with `P2PA_HOME`):
 
@@ -75,7 +77,7 @@ Config is `~/.config/p2p-agents/config.json` (override the directory with `P2PA_
 
 Defaults are as shown. Other files in that directory: `identity.key` (secret), `peers.json` (secret pairing keys), `log/<peer>.jsonl`, `lock`, and the control socket.
 
-Env: `P2PA_HOME` (state directory), `P2PA_NO_LAN=1` (disable LAN multicast), `P2PA_DEBUG=1` (log every outer event to stderr as JSON).
+Env: `P2PA_HOME` (state directory), `P2PA_NO_LAN=1` (disable LAN multicast), `P2PA_DEBUG=1` (log every outer event to stderr as a `p2pa-debug <json>` line).
 
 ## Same-user limit
 

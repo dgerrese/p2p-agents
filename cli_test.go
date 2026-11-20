@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
+	"io"
 	"os"
 	"os/exec"
 	"p2p-agents/internal/p2p"
@@ -100,5 +103,124 @@ func TestResolvePeer(t *testing.T) {
 	}
 	if _, err := resolvePeer(ps, "aaaa"); err == nil { // < 8 chars never matches a prefix
 		t.Fatal("short prefix matched")
+	}
+}
+
+// fakeAPI is one pending request with code 123456 and a node-like 3-try limit.
+type fakeAPI struct {
+	NodeAPI
+	wrong              int
+	accepted, rejected bool
+	peers              []p2p.PeerStatus
+	gone, noPair       bool
+}
+
+const fakePub = "aaaaaaaabbbbbbbbccccccccdddddddd"
+
+func (f *fakeAPI) Requests() ([]p2p.PairRequest, error) {
+	if f.gone {
+		return nil, nil
+	}
+	return []p2p.PairRequest{{ID: "r1", PeerPub: fakePub, PeerName: "bob"}}, nil
+}
+func (f *fakeAPI) VerifyCodeFor(string) (string, error) { return "123456", nil }
+func (f *fakeAPI) Peers() ([]p2p.PeerStatus, error)     { return f.peers, nil }
+func (f *fakeAPI) Reject(string) error                  { f.rejected = true; return nil }
+func (f *fakeAPI) Accept(_, typed string) error {
+	if f.gone {
+		return p2p.ErrNoRequest
+	}
+	if typed == "123456" {
+		f.accepted = true
+		if !f.noPair {
+			f.peers = []p2p.PeerStatus{{Pub: fakePub, Name: "bob"}}
+		}
+		return nil
+	}
+	if f.wrong++; f.wrong >= 3 {
+		f.gone = true
+	}
+	return p2p.ErrWrongCode
+}
+
+func prompt(t *testing.T, f *fakeAPI, input string) (string, error) {
+	t.Helper()
+	isTTY = func() bool { return true }
+	t.Cleanup(func() { isTTY = func() bool { return false } })
+	var out bytes.Buffer
+	err := promptAccept(context.Background(), f, "r1", &out, bufio.NewReader(strings.NewReader(input)))
+	return out.String(), err
+}
+
+func TestPromptEnterRejects(t *testing.T) {
+	f := &fakeAPI{}
+	out, err := prompt(t, f, "\n")
+	if err != nil || !f.rejected || f.accepted || !strings.Contains(out, "Type the code to accept, or press Enter to reject: ") {
+		t.Fatal(err, f, out)
+	}
+}
+
+func TestPromptWrongThenRight(t *testing.T) {
+	f := &fakeAPI{}
+	out, err := prompt(t, f, "000000\n123456\n")
+	if err != nil || !f.accepted || strings.Count(out, "Wrong code.") != 1 {
+		t.Fatal(err, f, out)
+	}
+}
+
+func TestPromptThirdWrongFails(t *testing.T) {
+	f := &fakeAPI{}
+	out, err := prompt(t, f, "1\n2\n3\n123456\n")
+	if err == nil || f.accepted || !strings.Contains(err.Error(), "too many wrong codes") || strings.Count(out, "Wrong code.") != 2 {
+		t.Fatal(err, f, out)
+	}
+}
+
+func TestPromptRefusesWithoutTTY(t *testing.T) {
+	isTTY = func() bool { return false }
+	f := &fakeAPI{}
+	var out bytes.Buffer
+	err := promptAccept(context.Background(), f, "r1", &out, bufio.NewReader(strings.NewReader("123456\n")))
+	if err == nil || f.accepted || out.Len() != 0 {
+		t.Fatal(err, out.String())
+	}
+}
+
+func TestPromptInterruptDoesNotReject(t *testing.T) {
+	f := &fakeAPI{}
+	isTTY = func() bool { return true }
+	defer func() { isTTY = func() bool { return false } }()
+	ctx, cancel := context.WithCancel(context.Background())
+	pr, _ := io.Pipe() // never delivers input
+	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
+	err := promptAccept(ctx, f, "r1", io.Discard, bufio.NewReader(pr))
+	if err == nil || !strings.Contains(err.Error(), "interrupted") || f.rejected {
+		t.Fatal(err, f)
+	}
+}
+
+func TestPromptSurfacesRemoteRejection(t *testing.T) {
+	f := &fakeAPI{noPair: true}
+	done := make(chan error, 1)
+	go func() { _, err := prompt(t, f, "123456\n"); done <- err }()
+	time.Sleep(100 * time.Millisecond)
+	f.gone = true // pair_no arrived: request gone, peer never added
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "rejected") {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("still waiting after rejection")
+	}
+}
+
+func TestRequestsHidesRealCode(t *testing.T) {
+	var out bytes.Buffer
+	if err := printRequests(&fakeAPI{}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "123456") || !strings.Contains(out.String(), "r1") {
+		t.Fatal(out.String())
 	}
 }

@@ -104,18 +104,13 @@ func nodeClient(st *p2p.Store) (api NodeAPI, cleanup func(), err error) {
 	return local{n}, func() { stop(); cancel(); <-done; release() }, nil
 }
 
+var isTTY = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) }
+
 func requireTTY() error {
-	if term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
+	if isTTY() {
 		return nil
 	}
 	return errors.New("accept must be run by the owner in an interactive terminal")
-}
-
-func fingerprint(pub string) string { // same format as the node's PeerStatus.Fingerprint
-	if len(pub) < 16 {
-		return pub
-	}
-	return pub[0:4] + " " + pub[4:8] + " " + pub[8:12] + " " + pub[12:16]
 }
 
 func runCLI(ctx context.Context, args []string, in io.Reader, out io.Writer) error {
@@ -140,7 +135,7 @@ func runCLI(ctx context.Context, args []string, in io.Reader, out io.Writer) err
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "name: %q\nfingerprint: %s\npub: %s\n", cfg.Name, fingerprint(pub), pub)
+		fmt.Fprintf(out, "name: %q\nfingerprint: %s\npub: %s\n", cfg.Name, p2p.Fingerprint(pub), pub)
 		return nil
 	case "name":
 		if err := need(1, "<name>"); err != nil {
@@ -203,17 +198,7 @@ func runCLI(ctx context.Context, args []string, in io.Reader, out io.Writer) err
 		fmt.Fprintln(out, "Waiting for the other owner...")
 		return waitAndPrompt(ctx, api, id, out, r)
 	case "requests":
-		reqs, err := api.Requests()
-		if err != nil {
-			return err
-		}
-		if len(reqs) == 0 {
-			fmt.Fprintln(out, "No pending pairing requests.")
-		}
-		for _, q := range reqs {
-			fmt.Fprintf(out, "%s  %q  (fingerprint %s)\n", q.ID, q.PeerName, fingerprint(q.PeerPub))
-		}
-		return nil
+		return printRequests(api, out)
 	case "accept":
 		return promptAccept(ctx, api, rest[0], out, r)
 	case "reject":
@@ -256,6 +241,21 @@ func runCLI(ctx context.Context, args []string, in io.Reader, out io.Writer) err
 	return nil
 }
 
+// printRequests never prints the verify code.
+func printRequests(api NodeAPI, out io.Writer) error {
+	reqs, err := api.Requests()
+	if err != nil {
+		return err
+	}
+	if len(reqs) == 0 {
+		fmt.Fprintln(out, "No pending pairing requests.")
+	}
+	for _, q := range reqs {
+		fmt.Fprintf(out, "%s  %q  (fingerprint %s)\n", q.ID, q.PeerName, p2p.Fingerprint(q.PeerPub))
+	}
+	return nil
+}
+
 // resolvePeer matches a name, a pub hex prefix of >= 8 chars, or a full pub.
 func resolvePeer(ps []p2p.PeerStatus, q string) (p2p.PeerStatus, error) {
 	var m []p2p.PeerStatus
@@ -282,20 +282,25 @@ const pollEvery = 300 * time.Millisecond
 // ponytail: polling with a fixed 10 min cap; a peer that rejects or vanishes is only noticed at the cap. Use Events() in-process if that hurts.
 const waitCap = 10 * time.Minute
 
-func poll(ctx context.Context, f func() bool) bool {
-	ctx, cancel := context.WithTimeout(ctx, waitCap)
-	defer cancel()
+// poll runs f until it reports done or errors; it returns ctx.Err() on interrupt and errTimeout at the cap.
+func poll(ctx context.Context, f func() (bool, error)) error {
+	t := time.NewTimer(waitCap)
+	defer t.Stop()
 	for {
-		if f() {
-			return true
+		if done, err := f(); done || err != nil {
+			return err
 		}
 		select {
 		case <-ctx.Done():
-			return false
+			return ctx.Err()
+		case <-t.C:
+			return errTimeout
 		case <-time.After(pollEvery):
 		}
 	}
 }
+
+var errTimeout = errors.New("timed out waiting for the other owner")
 
 func peerCount(api NodeAPI) int { ps, _ := api.Peers(); return len(ps) }
 
@@ -317,7 +322,7 @@ func inviteWait(ctx context.Context, api NodeAPI, out io.Writer, r *bufio.Reader
 			}
 			seen[q.ID] = true
 			if !tty {
-				fmt.Fprintf(out, "Pairing request %s from %q (fingerprint %s); run `p2p-agents accept %s` in a terminal.\n", q.ID, q.PeerName, fingerprint(q.PeerPub), q.ID)
+				fmt.Fprintf(out, "Pairing request %s from %q (fingerprint %s); run `p2p-agents accept %s` in a terminal.\n", q.ID, q.PeerName, p2p.Fingerprint(q.PeerPub), q.ID)
 				continue
 			}
 			if err := promptAccept(ctx, api, q.ID, out, r); err != nil {
@@ -334,10 +339,26 @@ func inviteWait(ctx context.Context, api NodeAPI, out io.Writer, r *bufio.Reader
 
 // waitAndPrompt waits for the verify code of request id (joiner side), then prompts.
 func waitAndPrompt(ctx context.Context, api NodeAPI, id string, out io.Writer, r *bufio.Reader) error {
-	if !poll(ctx, func() bool { _, err := api.VerifyCodeFor(id); return err == nil }) {
-		return errors.New("timed out waiting for the other owner")
+	if err := poll(ctx, func() (bool, error) { _, err := api.VerifyCodeFor(id); return err == nil, nil }); err != nil {
+		return err
 	}
 	return promptAccept(ctx, api, id, out, r)
+}
+
+// readLine reads a line without blocking past ctx (the reader goroutine is abandoned on interrupt).
+func readLine(ctx context.Context, r *bufio.Reader) (string, error) {
+	type res struct {
+		s   string
+		err error
+	}
+	c := make(chan res, 1)
+	go func() { s, err := r.ReadString('\n'); c <- res{s, err} }()
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case x := <-c:
+		return x.s, x.err
+	}
 }
 
 // promptAccept shows the code and takes the typed code. The TTY check is repeated here
@@ -361,8 +382,11 @@ func promptAccept(ctx context.Context, api NodeAPI, id string, out io.Writer, r 
 		return errors.New("no such pending pairing request")
 	}
 	for tries := 0; tries < 3; tries++ {
-		fmt.Fprintf(out, "Pairing request from %q (fingerprint %s).\nCompare this code with the other owner: %s\nType the code to accept, or press Enter to reject: ", req.PeerName, fingerprint(req.PeerPub), code)
-		line, rerr := r.ReadString('\n')
+		fmt.Fprintf(out, "Pairing request from %q (fingerprint %s).\nCompare this code with the other owner: %s\nType the code to accept, or press Enter to reject: ", req.PeerName, p2p.Fingerprint(req.PeerPub), code)
+		line, rerr := readLine(ctx, r)
+		if ctx.Err() != nil {
+			return errors.New("interrupted")
+		}
 		line = strings.TrimSpace(line)
 		if line == "" { // Enter, or EOF
 			if rerr == nil || rerr == io.EOF {
@@ -377,19 +401,31 @@ func promptAccept(ctx context.Context, api NodeAPI, id string, out io.Writer, r 
 		err := api.Accept(id, line)
 		if err == nil {
 			fmt.Fprintln(out, "Accepted. Waiting for the other owner to accept...")
-			if !poll(ctx, func() bool {
-				ps, _ := api.Peers()
-				for _, p := range ps {
-					if p.Pub == req.PeerPub {
-						return true
+			if err := poll(ctx, func() (bool, error) {
+				if paired(api, req.PeerPub) {
+					return true, nil
+				}
+				reqs, err := api.Requests()
+				if err != nil {
+					return false, err
+				}
+				for _, q := range reqs {
+					if q.ID == id {
+						return false, nil
 					}
 				}
-				return false
-			}) {
-				return errors.New("timed out waiting for the other owner to accept")
+				if paired(api, req.PeerPub) { // finished between the two calls
+					return true, nil
+				}
+				return false, errors.New("the other owner rejected the pairing (or it failed)")
+			}); err != nil {
+				return err
 			}
 			fmt.Fprintf(out, "Paired with %q.\n", req.PeerName)
 			return nil
+		}
+		if tries > 0 && strings.Contains(err.Error(), p2p.ErrNoRequest.Error()) { // node already failed it
+			return errors.New("pairing failed (too many wrong codes or expired)")
 		}
 		if !strings.Contains(err.Error(), p2p.ErrWrongCode.Error()) {
 			return err
@@ -400,4 +436,14 @@ func promptAccept(ctx context.Context, api NodeAPI, id string, out io.Writer, r 
 		fmt.Fprintln(out, "Wrong code.")
 	}
 	return nil
+}
+
+func paired(api NodeAPI, pub string) bool {
+	ps, _ := api.Peers()
+	for _, p := range ps {
+		if p.Pub == pub {
+			return true
+		}
+	}
+	return false
 }

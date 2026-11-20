@@ -58,8 +58,8 @@ func isMsgID(s string) bool {
 	return true
 }
 
-// fingerprint is the first 16 hex chars of pub in groups of 4.
-func fingerprint(pub string) string {
+// Fingerprint is the first 16 hex chars of pub in groups of 4.
+func Fingerprint(pub string) string {
 	if len(pub) < 16 {
 		return pub
 	}
@@ -76,7 +76,7 @@ func (n *Node) Peers() []PeerStatus {
 	out := make([]PeerStatus, 0, len(ps))
 	for _, p := range ps {
 		c := n.conns[p.Pub]
-		out = append(out, PeerStatus{Pub: p.Pub, Name: p.Name, Fingerprint: fingerprint(p.Pub), Online: c != nil && c.dc != nil})
+		out = append(out, PeerStatus{Pub: p.Pub, Name: p.Name, Fingerprint: Fingerprint(p.Pub), Online: c != nil && c.dc != nil})
 	}
 	return out
 }

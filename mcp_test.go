@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -370,5 +371,42 @@ func TestPreInitPairRequestDelivered(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("no pairing dialog after initialize")
+	}
+}
+
+func TestReadMessagesLimit(t *testing.T) {
+	st := testStore(t, "me")
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	pub := strings.Repeat("ab", 32)
+	if err := st.AddPeer(p2p.Peer{Pub: pub, Name: "bob", Secret: secret}); err != nil {
+		t.Fatal(err)
+	}
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := range 600 {
+		e := p2p.LogEntry{ID: fmt.Sprintf("%032x", i), Peer: pub, Dir: "in", Text: fmt.Sprintf("msg-%d;", i), TS: t0.Add(time.Duration(i) * time.Second)}
+		if err := st.AppendLog(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := newHarness(t, st, nil, nil)
+	count := func(out string) int { return strings.Count(out, "msg-") }
+	out := h.call(t, "read_messages", nil)
+	if count(out) != 50 || !strings.Contains(out, "msg-599;") || strings.Contains(out, "msg-549;") || !strings.Contains(out, "550 older messages omitted") {
+		t.Fatalf("default: %d msgs, %.80q", count(out), out)
+	}
+	if strings.Index(out, "msg-550;") > strings.Index(out, "msg-599;") {
+		t.Fatal("not chronological")
+	}
+	out = h.call(t, "read_messages", map[string]any{"limit": 3})
+	if count(out) != 3 || !strings.Contains(out, "msg-597;") || !strings.Contains(out, "597 older") {
+		t.Fatalf("limit 3: %q", out)
+	}
+	out = h.call(t, "read_messages", map[string]any{"limit": 100000})
+	if count(out) != 500 || !strings.Contains(out, "100 older") {
+		t.Fatalf("cap: %d msgs", count(out))
+	}
+	out = h.call(t, "read_messages", map[string]any{"limit": 1000, "since": t0.Add(550 * time.Second).Format(time.RFC3339)})
+	if count(out) != 50 || strings.Contains(out, "omitted") {
+		t.Fatalf("since: %d msgs", count(out))
 	}
 }

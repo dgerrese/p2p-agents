@@ -38,7 +38,7 @@ Other commands: `whoami`, `name <name>` (up to 64 characters), `requests`, `acce
 
 ## Agent tools
 
-`list_peers`, `read_messages` (optional `peer`, `since`), `send` (`peer`, `text` up to 64 KB, optional `reply_to`; returns `delivered`, `offline` or `failed`), `pair_invite`, `pair_join`, `reject`, `unpair`.
+`list_peers`, `read_messages` (optional `peer`, `since`, `limit`; returns the newest `limit` entries, default 50, max 500, and says when older ones were omitted), `send` (`peer`, `text` up to 64 KB, optional `reply_to`; returns `delivered`, `offline`, `failed` or `unconfirmed`; `unconfirmed` means no ack arrived within 10 s, so the peer may have the message and the agent should check `read_messages` or ask the peer before resending), `pair_invite`, `pair_join`, `reject`, `unpair`.
 
 There is no accept tool. `pair_invite` and `pair_join` only start pairing; the owner still confirms.
 
@@ -133,6 +133,8 @@ The `Read` and `Edit` rules are enforced for Claude Code's own file tools. The `
 
 ## Known limits
 
+- Incoming messages are rate limited per peer (burst of 10, refilling 30 per minute); excess messages get a `failed` ack and are dropped without a log entry or notification.
+- A message ID already received from a peer is acked again but not delivered twice. This duplicate detection is in memory and does not survive a restart.
 - No TURN. If a direct connection cannot be made (strict NAT on both sides), the peer stays `offline`.
 - No offline delivery. Messages only go to online peers; `send` returns `offline` otherwise.
 - A second Claude Code session is read-only: `list_peers` and `read_messages` work from disk, with online status unknown, but it cannot send or pair.

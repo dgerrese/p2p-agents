@@ -415,3 +415,93 @@ func TestPeersSurfacesStoreError(t *testing.T) {
 		t.Fatalf("corrupt peers.json: got %+v, nil error", ps)
 	}
 }
+
+func rawMsg(t *testing.T, a *testNode, bPub string, m wireMsg) string {
+	t.Helper()
+	ack := make(chan string, 1)
+	a.Node.mu.Lock()
+	a.acks[m.ID] = ack
+	dc := a.conns[bPub].dc
+	a.Node.mu.Unlock()
+	if err := sendWire(dc, m); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case s := <-ack:
+		return s
+	case <-time.After(5 * time.Second):
+		t.Fatal("no ack")
+	}
+	return ""
+}
+
+func TestAckTimeoutUnconfirmed(t *testing.T) {
+	a, b, aPub, bPub := connectedPair(t)
+	a.ackTimeout = 300 * time.Millisecond
+	b.Node.mu.Lock()
+	delete(b.known, aPub) // b now ignores a's frames, so no ack comes back
+	b.Node.mu.Unlock()
+	id, status, err := a.Send(context.Background(), bPub, "maybe", "")
+	if err != nil || status != "unconfirmed" {
+		t.Fatalf("status=%q err=%v", status, err)
+	}
+	l, _ := a.st.ReadLog(bPub, time.Time{})
+	if len(l) != 1 || l[0].ID != id || l[0].Status != "unconfirmed" {
+		t.Fatalf("log %+v", l)
+	}
+}
+
+func TestDuplicateIncomingIgnored(t *testing.T) {
+	a, b, aPub, bPub := connectedPair(t)
+	m := wireMsg{ID: hex.EncodeToString(randBytes(16)), Type: "msg", Text: "once"}
+	for i := 0; i < 2; i++ {
+		if s := rawMsg(t, a, bPub, m); s != "delivered" {
+			t.Fatalf("send %d: ack %q", i, s)
+		}
+	}
+	if n := b.count("message"); n != 1 {
+		t.Fatalf("%d message events", n)
+	}
+	if l, _ := b.st.ReadLog(aPub, time.Time{}); len(l) != 1 {
+		t.Fatalf("%d log entries", len(l))
+	}
+}
+
+func TestIncomingRateLimit(t *testing.T) {
+	a, b, aPub, bPub := connectedPair(t)
+	for i := 0; i < rateBurst+3; i++ {
+		s := rawMsg(t, a, bPub, wireMsg{ID: hex.EncodeToString(randBytes(16)), Type: "msg", Text: "x"})
+		if want := map[bool]string{true: "delivered", false: "failed"}[i < rateBurst]; s != want {
+			t.Fatalf("msg %d: ack %q, want %q", i, s, want)
+		}
+	}
+	if l, _ := b.st.ReadLog(aPub, time.Time{}); len(l) != rateBurst {
+		t.Fatalf("%d log entries", len(l))
+	}
+	if n := b.count("message"); n != rateBurst {
+		t.Fatalf("%d events", n)
+	}
+}
+
+func TestBucketRefill(t *testing.T) {
+	var b bucket
+	t0 := time.Unix(1000, 0)
+	for i := 0; i < rateBurst; i++ {
+		if !b.allow(t0) {
+			t.Fatalf("burst %d denied", i)
+		}
+	}
+	if b.allow(t0) || b.allow(t0.Add(time.Second)) { // 1s refills only half a token
+		t.Fatal("over-limit allowed")
+	}
+	if !b.allow(t0.Add(2 * time.Second)) { // a full token by now
+		t.Fatal("not refilled")
+	}
+	if b.allow(t0.Add(2 * time.Second)) {
+		t.Fatal("extra token")
+	}
+	b.allow(t0.Add(time.Hour))
+	if b.tokens > rateBurst {
+		t.Fatalf("tokens %v above burst", b.tokens)
+	}
+}

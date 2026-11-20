@@ -241,3 +241,38 @@ func TestRequestsHidesRealCode(t *testing.T) {
 		t.Fatal(out.String())
 	}
 }
+
+// TestListingsDoNotStartNode: with no instance running, peers/requests read the store.
+// The config has no usable transport, so building a Node would fail; the lock stays free.
+func TestListingsDoNotStartNode(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("P2PA_HOME", home)
+	t.Setenv("P2PA_NO_LAN", "1")
+	os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"lan_only":true}`), 0o600)
+	st := &p2p.Store{Dir: home}
+	if err := st.AddPeer(p2p.Peer{Pub: strings.Repeat("ab", 32), Name: "bob", Secret: []byte{1}}); err != nil {
+		t.Fatal(err)
+	}
+	for cmd, want := range map[string]string{"peers": `"bob"  abababab`, "requests": "No pending pairing requests."} {
+		var out bytes.Buffer
+		if err := runCLI(context.Background(), []string{cmd}, strings.NewReader(""), &out); err != nil || !strings.Contains(out.String(), want) {
+			t.Fatalf("%s: %v %q", cmd, err, out.String())
+		}
+	}
+	release, ok, err := st.Lock()
+	if err != nil || !ok {
+		t.Fatalf("lock not free afterwards: ok=%v err=%v", ok, err)
+	}
+	release()
+}
+
+func TestNameCapped(t *testing.T) {
+	t.Setenv("P2PA_HOME", t.TempDir())
+	var out bytes.Buffer
+	if err := runCLI(context.Background(), []string{"name", strings.Repeat("é", 65)}, nil, &out); err == nil {
+		t.Fatal("65-rune name accepted")
+	}
+	if err := runCLI(context.Background(), []string{"name", strings.Repeat("é", 64)}, nil, &out); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -132,7 +132,12 @@ func (m *mcpServer) peers() ([]p2p.PeerStatus, error) {
 	if m.n != nil {
 		return m.n.Peers(), nil
 	}
-	ps, err := m.st.Peers()
+	return storePeers(m.st)
+}
+
+// storePeers lists paired peers from disk; online status is unknown there.
+func storePeers(st *p2p.Store) ([]p2p.PeerStatus, error) {
+	ps, err := st.Peers()
 	var out []p2p.PeerStatus
 	for _, p := range ps {
 		out = append(out, p2p.PeerStatus{Pub: p.Pub, Name: p.Name, Fingerprint: p2p.Fingerprint(p.Pub)})
@@ -241,7 +246,7 @@ func (m *mcpServer) pairInvite(context.Context, mcp.CallToolRequest) (*mcp.CallT
 		return m.result("", err)
 	}
 	return m.result("Invite code (valid 24h). Give it to your user to share with the other owner:\n"+code+
-		"\nWhen the other owner joins, your user confirms the pairing in a dialog or with `p2p-agents accept <id>` in a terminal.", nil)
+		"\nWhen the other owner joins, your user confirms the pairing in a dialog or with `p2p-agents accept <id>` in a terminal. If no dialog appears and no notification arrives, your user can run `p2p-agents requests` in a terminal to see the request id, then `p2p-agents accept <id>`.", nil)
 }
 
 func (m *mcpServer) pairJoin(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -267,8 +272,9 @@ func (m *mcpServer) unpair(_ context.Context, req mcp.CallToolRequest) (*mcp.Cal
 	return m.result(fmt.Sprintf("Unpaired \"%s\".", quoteName(p.Name)), nil)
 }
 
-// tagRE matches anything that could read as a peer-message tag, incl. spacing and a fullwidth "<".
-var tagRE = regexp.MustCompile(`(?i)[<＜]\s*/?\s*peer-message`)
+// tagRE matches anything that could read as a peer-message or channel tag (the client wraps
+// notifications in <channel>), incl. Unicode spacing and a fullwidth "<".
+var tagRE = regexp.MustCompile(`(?i)[<＜][\s\p{Z}]*/?[\s\p{Z}]*(peer-message|channel)`)
 
 // escapeTags drops invisible format characters (Cf), then turns every tag-like "<" into "&lt;".
 func escapeTags(s string) string {

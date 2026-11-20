@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 
@@ -38,6 +39,18 @@ func (l local) Accept(id, typed string) error           { return l.n.Accept(id, 
 func (l local) Reject(id string) error                  { return l.n.Reject(id) }
 func (l local) Peers() ([]p2p.PeerStatus, error)        { return l.n.Peers(), nil }
 func (l local) Unpair(p, r string) error                { return l.n.Unpair(p, r) }
+
+// offline answers listings from disk when no instance runs: nothing can be pending then.
+// Only Peers and Requests are implemented.
+type offline struct {
+	NodeAPI
+	st *p2p.Store
+}
+
+func (o offline) Requests() ([]p2p.PairRequest, error) { return nil, nil }
+func (o offline) Peers() ([]p2p.PeerStatus, error)     { return storePeers(o.st) }
+
+const maxNameRunes = 64 // same cap peers apply to names they receive
 
 type remote struct{ c *rpc.Client }
 
@@ -146,6 +159,9 @@ func runCLI(ctx context.Context, args []string, in io.Reader, out io.Writer) err
 			return err
 		}
 		cfg.Name = strings.Join(rest, " ")
+		if utf8.RuneCountInString(cfg.Name) > maxNameRunes {
+			return fmt.Errorf("name too long (max %d characters)", maxNameRunes)
+		}
 		fmt.Fprintln(out, "Name saved; a running instance picks it up on restart.")
 		return st.SaveConfig(cfg)
 	case "accept":
@@ -170,11 +186,23 @@ func runCLI(ctx context.Context, args []string, in io.Reader, out io.Writer) err
 		return errors.New("usage: p2p-agents " + cmd + " <id|peer>")
 	}
 
-	api, cleanup, err := nodeClient(st)
-	if err != nil {
-		return err
+	var api NodeAPI
+	if cmd == "peers" || cmd == "requests" {
+		// A listing never starts a Node: that would touch the network and briefly hold the lock.
+		// ponytail: an instance that holds the lock but has no socket yet gets the store view.
+		if c, err := rpc.Dial("unix", sockPath(st)); err == nil {
+			defer c.Close()
+			api = remote{c}
+		} else {
+			api = offline{st: st}
+		}
+	} else {
+		var cleanup func()
+		if api, cleanup, err = nodeClient(st); err != nil {
+			return err
+		}
+		defer cleanup()
 	}
-	defer cleanup()
 	_, inProc := api.(local)
 	r := bufio.NewReader(in)
 

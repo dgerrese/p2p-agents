@@ -2,15 +2,11 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 )
-
-// runMCP is the no-args MCP server. Task 7 replaces this stub.
-func runMCP(ctx context.Context) error { return errors.New("not implemented") }
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

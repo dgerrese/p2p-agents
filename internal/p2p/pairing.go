@@ -99,12 +99,23 @@ func sideCode(sas []byte, label, pubA, pubB string) string {
 	return VerifyCode(k[:], pubA, pubB)
 }
 
+// pairCodes returns code_I and code_J. If they collide, code_J is re-derived with a counter
+// in its label until they differ, so typing your own code can never succeed. Both sides
+// compute the same result.
+func pairCodes(sas []byte, pubA, pubB string) (ci, cj string) {
+	ci = sideCode(sas, "p2pa-code-inviter", pubA, pubB)
+	cj = sideCode(sas, "p2pa-code-joiner", pubA, pubB)
+	for i := 1; cj == ci; i++ {
+		cj = sideCode(sas, fmt.Sprintf("p2pa-code-joiner-%d", i), pubA, pubB)
+	}
+	return ci, cj
+}
+
 // codesLocked returns the code this side shows and the code the other side shows.
 // The inviter shows code_I and the joiner shows code_J; each owner types the other's code,
 // so a correct entry proves the owners exchanged codes.
 func (n *Node) codesLocked(r *pairReq) (shown, other string) {
-	ci := sideCode(r.sas, "p2pa-code-inviter", n.pub, r.PeerPub)
-	cj := sideCode(r.sas, "p2pa-code-joiner", n.pub, r.PeerPub)
+	ci, cj := pairCodes(r.sas, n.pub, r.PeerPub)
 	if r.commit != nil { // only the inviter holds the joiner's commit
 		return ci, cj
 	}

@@ -451,3 +451,20 @@ func TestJoinOversizedNameError(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// TestPairCodesNeverCollide: this sas makes the first code_J derivation equal code_I
+// (found by search); pairCodes must re-derive code_J so the two differ.
+func TestPairCodesNeverCollide(t *testing.T) {
+	sas := make([]byte, 32)
+	sas[5], sas[6], sas[7] = 0x05, 0x42, 0xbf
+	if sideCode(sas, "p2pa-code-inviter", "aa", "bb") != sideCode(sas, "p2pa-code-joiner", "aa", "bb") {
+		t.Fatal("fixture no longer collides")
+	}
+	ci, cj := pairCodes(sas, "aa", "bb")
+	if ci == cj || len(cj) != 6 {
+		t.Fatalf("codes %q %q", ci, cj)
+	}
+	if ci2, cj2 := pairCodes(sas, "bb", "aa"); ci2 != ci || cj2 != cj {
+		t.Fatal("sides derive different codes")
+	}
+}

@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"maps"
+	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nbd-wtf/go-nostr"
@@ -32,8 +35,11 @@ type Node struct {
 	st      *Store
 	sk, pub string
 	name    string
-	sigs    []Signal
+	sigs    []Signal // LAN first when both are set
+	stun    []string
 	events  chan Event
+
+	connected atomic.Int32 // PeerConnections that reached connected; for tests
 
 	mu      sync.Mutex
 	closed  bool
@@ -42,6 +48,31 @@ type Node struct {
 	boxes   map[string]box      // subscribed mailbox pub -> key
 	window  int64
 	seen    map[string]bool // inner event IDs, only touched by the Run goroutine
+	known   map[string]Peer // paired peers by pub, refreshed on resubscribe
+	conns   map[string]*peerConn
+	dials   map[string]*dialState
+	acks    map[string]chan string // message ID -> ack status
+}
+
+var newRelays = NewRelays // seam for TestLANOnlyNoRelays
+
+// NewNodeFromConfig builds the signals from config: LAN unless P2PA_NO_LAN=1, relays unless lan_only.
+func NewNodeFromConfig(st *Store) (*Node, error) {
+	cfg, err := st.Config()
+	if err != nil {
+		return nil, err
+	}
+	var lan, relay Signal
+	if os.Getenv("P2PA_NO_LAN") != "1" {
+		if lan, err = NewLAN(); err != nil {
+			log.Printf("LAN signaling unavailable: %v", err)
+			lan = nil
+		}
+	}
+	if !cfg.LANOnly {
+		relay = newRelays(cfg.Relays)
+	}
+	return NewNode(st, lan, relay)
 }
 
 // NewNode takes ownership of the signals; either may be nil, not both.
@@ -64,9 +95,10 @@ func NewNode(st *Store, lan, relay Signal) (*Node, error) {
 		return nil, err
 	}
 	n := &Node{
-		st: st, sk: sk, pub: pub, name: cfg.Name, sigs: sigs,
+		st: st, sk: sk, pub: pub, name: cfg.Name, sigs: sigs, stun: cfg.STUN,
 		events:  make(chan Event, 256),
 		invites: map[string]*invite{}, reqs: map[string]*pairReq{}, seen: map[string]bool{},
+		conns: map[string]*peerConn{}, dials: map[string]*dialState{}, acks: map[string]chan string{},
 	}
 	return n, n.resubscribe()
 }
@@ -94,10 +126,18 @@ func (n *Node) Run(ctx context.Context) error {
 		n.mu.Lock()
 		n.closed = true
 		close(n.events)
+		conns := n.conns
+		n.conns = map[string]*peerConn{}
 		n.mu.Unlock()
+		for _, c := range conns {
+			c.pc.Close()
+		}
 	}()
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
+	dial := time.NewTicker(dialTick)
+	defer dial.Stop()
+	n.maintain()
 	for {
 		select {
 		case <-ctx.Done():
@@ -110,6 +150,8 @@ func (n *Node) Run(ctx context.Context) error {
 				n.resubscribeLocked()
 			}
 			n.mu.Unlock()
+		case <-dial.C:
+			n.maintain()
 		}
 	}
 }
@@ -134,7 +176,10 @@ func (n *Node) handle(ev nostr.Event) {
 		if b.peer == "" {
 			n.handlePair(tag[1], p, sender)
 		}
-		// Task 5: knock|offer|answer|bye on peer mailboxes (b.peer != "", require sender == b.peer).
+	case "knock", "offer", "answer", "bye":
+		if b.peer != "" && sender == b.peer { // only the peer owning this mailbox
+			n.handleConn(b.peer, p)
+		}
 	}
 }
 
@@ -182,7 +227,7 @@ func (n *Node) resubscribeLocked() error {
 	}
 	n.pruneLocked()
 	n.window = Window(now())
-	boxes := map[string]box{}
+	boxes, known := map[string]box{}, map[string]Peer{}
 	for pub, inv := range n.invites {
 		boxes[pub] = box{sk: inv.sk}
 	}
@@ -193,12 +238,13 @@ func (n *Node) resubscribeLocked() error {
 		if len(p.Secret) == 0 { // MailboxKey panics on it; a broken entry must not kill the node
 			continue
 		}
+		known[p.Pub] = p
 		for w := n.window - 1; w <= n.window+1; w++ {
 			sk, pub := MailboxKey(p.Secret, w)
 			boxes[pub] = box{sk: sk, peer: p.Pub}
 		}
 	}
-	n.boxes = boxes
+	n.boxes, n.known = boxes, known
 	pubs := slices.Collect(maps.Keys(boxes))
 	for _, s := range n.sigs {
 		s.Subscribe(pubs)
@@ -230,7 +276,8 @@ func (n *Node) seal(typ string, data any, mailbox string) *nostr.Event {
 	return &ev
 }
 
-// publish sends ev on every signal and succeeds if any did (Task 5 adds LAN-first timing).
+// publish sends ev on every signal at once and succeeds if any did.
+// ponytail: pairing, knock, answer and bye skip the LAN-first wait (only offers use publishFirst), costs relay traffic on a shared LAN; route them through publishFirst if that matters.
 func (n *Node) publish(ev *nostr.Event) error {
 	if ev == nil {
 		return errors.New("seal failed")

@@ -100,14 +100,16 @@ func randBytes(n int) []byte {
 
 func newRequestID() string { return hex.EncodeToString(randBytes(8)) }
 
-// cleanName strips control/format characters and caps length; peer names are untrusted.
-func cleanName(s string) string {
+func cleanName(s string) string { return cleanText(s, maxNameRunes) }
+
+// cleanText strips control/format characters and caps length; peer-supplied text is untrusted.
+func cleanText(s string, max int) string {
 	var out []rune
 	for _, r := range s {
 		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
 			continue
 		}
-		if out = append(out, r); len(out) == maxNameRunes {
+		if out = append(out, r); len(out) == max {
 			break
 		}
 	}

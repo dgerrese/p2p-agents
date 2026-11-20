@@ -6,7 +6,7 @@ toolchain go1.27.4
 
 require (
 	github.com/coder/websocket v1.8.15
-	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
 	github.com/mark3labs/mcp-go v1.6.0
 	github.com/nbd-wtf/go-nostr v0.52.3
 	github.com/pion/logging v0.2.4

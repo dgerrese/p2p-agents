@@ -64,13 +64,13 @@ func livePair(t *testing.T, a, b *Node) {
 	})
 	ca, _ := a.VerifyCodeFor(aid)
 	cb, _ := b.VerifyCodeFor(bid)
-	if ca == "" || ca != cb {
-		t.Fatalf("verify codes differ: %q vs %q", ca, cb)
+	if ca == "" || cb == "" || ca == cb {
+		t.Fatalf("verify codes: %q vs %q", ca, cb)
 	}
-	if err := a.Accept(aid, ca); err != nil {
+	if err := a.Accept(aid, cb); err != nil { // each owner types the code the other reads out
 		t.Fatal(err)
 	}
-	if err := b.Accept(bid, cb); err != nil {
+	if err := b.Accept(bid, ca); err != nil {
 		t.Fatal(err)
 	}
 	liveWait(t, 90*time.Second, "paired", func() bool {

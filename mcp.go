@@ -362,9 +362,10 @@ func (m *mcpServer) forward(events <-chan p2p.Event) {
 	}
 }
 
-// elicit asks the human (not the model) to type the verify code. Decline/cancel leaves the
-// request pending for the CLI; an error means the client can't elicit, so the notification
-// and the CLI remain the path. The code goes only into the dialog message.
+// elicit shows the human (not the model) this side's code and asks for the code the other
+// owner reads out. Decline/cancel leaves the request pending for the CLI; an error means the
+// client can't elicit, so the notification and the CLI remain the path. The code goes only
+// into the dialog message.
 func (m *mcpServer) elicit(e p2p.Event) {
 	m.mu.Lock()
 	sess := m.session
@@ -376,7 +377,7 @@ func (m *mcpServer) elicit(e p2p.Event) {
 	defer cancel()
 	schema := map[string]any{
 		"type":       "object",
-		"properties": map[string]any{"code": map[string]any{"type": "string", "title": "Verification code", "description": "The 6-digit code"}},
+		"properties": map[string]any{"code": map[string]any{"type": "string", "title": "Verification code", "description": "The code the other owner reads to you"}},
 		"required":   []string{"code"},
 	}
 	for tries := 0; tries < 3; tries++ {
@@ -384,7 +385,7 @@ func (m *mcpServer) elicit(e p2p.Event) {
 		if err != nil {
 			return // already accepted, rejected or expired
 		}
-		msg := fmt.Sprintf("Pairing request from %q (fingerprint %s).\nCompare this code with the other owner: %s\nType the code to accept. Decline to decide later with \"p2p-agents accept %s\".",
+		msg := fmt.Sprintf("Pairing request from %q (fingerprint %s).\nRead this code to the other owner: %s\nType the code the other owner reads to you to accept. Decline to decide later with \"p2p-agents accept %s\".",
 			e.Name, p2p.Fingerprint(e.Peer), code, e.ID)
 		if tries > 0 {
 			msg = "Wrong code. " + msg

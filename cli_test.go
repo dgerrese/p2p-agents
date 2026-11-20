@@ -107,7 +107,7 @@ func TestResolvePeer(t *testing.T) {
 	}
 }
 
-// fakeAPI is one pending request with code 123456 and a node-like 3-try limit.
+// fakeAPI is one pending request that shows 654321, expects the other side's 123456, and has a node-like 3-try limit.
 type fakeAPI struct {
 	NodeAPI
 	mu                 sync.Mutex
@@ -127,7 +127,7 @@ func (f *fakeAPI) Requests() ([]p2p.PairRequest, error) {
 	}
 	return []p2p.PairRequest{{ID: "r1", PeerPub: fakePub, PeerName: "bob"}}, nil
 }
-func (f *fakeAPI) VerifyCodeFor(string) (string, error) { return "123456", nil }
+func (f *fakeAPI) VerifyCodeFor(string) (string, error) { return "654321", nil }
 func (f *fakeAPI) Peers() ([]p2p.PeerStatus, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -170,7 +170,7 @@ func prompt(t *testing.T, f *fakeAPI, input string) (string, error) {
 func TestPromptEnterRejects(t *testing.T) {
 	f := &fakeAPI{}
 	out, err := prompt(t, f, "\n")
-	if err != nil || !f.rejected || f.accepted || !strings.Contains(out, "Type the code to accept, or press Enter to reject: ") {
+	if err != nil || !f.rejected || f.accepted || !strings.Contains(out, "Read this code to the other owner: 654321\nType the code the other owner reads to you to accept, or press Enter to reject: ") {
 		t.Fatal(err, f, out)
 	}
 }
@@ -237,7 +237,7 @@ func TestRequestsHidesRealCode(t *testing.T) {
 	if err := printRequests(&fakeAPI{}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out.String(), "123456") || !strings.Contains(out.String(), "r1") {
+	if strings.Contains(out.String(), "123456") || strings.Contains(out.String(), "654321") || !strings.Contains(out.String(), "r1") {
 		t.Fatal(out.String())
 	}
 }

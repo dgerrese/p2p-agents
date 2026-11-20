@@ -5,7 +5,6 @@ import (
 	"net/rpc"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"p2p-agents/internal/p2p"
@@ -36,8 +35,9 @@ func (c *Control) VerifyCodeFor(a IDArgs, r *string) (err error) {
 func (c *Control) Accept(a AcceptArgs, _ *Empty) error { return c.n.Accept(a.ID, a.Typed) }
 func (c *Control) Reject(a IDArgs, _ *Empty) error     { return c.n.Reject(a.ID) }
 func (c *Control) Peers(_ Empty, r *[]p2p.PeerStatus) error {
-	*r = c.n.Peers()
-	return nil
+	ps, err := c.n.Peers()
+	*r = ps
+	return err
 }
 func (c *Control) Unpair(a UnpairArgs, _ *Empty) error { return c.n.Unpair(a.Peer, a.Reason) }
 
@@ -52,10 +52,14 @@ func serveControl(n *p2p.Node, st *p2p.Store) (stop func(), err error) {
 	}
 	path := sockPath(st)
 	os.Remove(path)
-	old := syscall.Umask(0o177) // the socket is created 0600, no chmod window
+	// No process-wide umask here: it would race with other goroutines creating files.
+	// The state dir is 0700 (OpenStore), so the brief window before Chmod exposes nothing.
 	l, err := net.Listen("unix", path)
-	syscall.Umask(old)
 	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		l.Close()
 		return nil, err
 	}
 	go srv.Accept(l)

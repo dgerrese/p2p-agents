@@ -130,7 +130,7 @@ func newMCPServer(n *p2p.Node, st *p2p.Store) *mcpServer {
 // peers lists the live node's view, or the store's (online unknown) when read-only.
 func (m *mcpServer) peers() ([]p2p.PeerStatus, error) {
 	if m.n != nil {
-		return m.n.Peers(), nil
+		return m.n.Peers()
 	}
 	return storePeers(m.st)
 }
@@ -225,7 +225,13 @@ func (m *mcpServer) readMessages(_ context.Context, req mcp.CallToolRequest) (*m
 	return m.result(strings.Join(out, "\n\n"), nil)
 }
 
-func (m *mcpServer) resolve(q string) (p2p.PeerStatus, error) { return resolvePeer(m.n.Peers(), q) }
+func (m *mcpServer) resolve(q string) (p2p.PeerStatus, error) {
+	ps, err := m.n.Peers()
+	if err != nil {
+		return p2p.PeerStatus{}, err
+	}
+	return resolvePeer(ps, q)
+}
 
 func (m *mcpServer) send(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	q, text := req.GetString("peer", ""), req.GetString("text", "")

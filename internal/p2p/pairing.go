@@ -310,7 +310,7 @@ func (n *Node) handlePair(mbox string, p Payload, sender string) {
 	defer func() {
 		n.mu.Unlock()
 		if out != nil {
-			n.publish(out)
+			go n.publish(out) // publish can wait ~10s on relays; keep the Run loop free
 		}
 	}()
 	if p.Type == "pair_req" { // inviter side; any sender that knows the secret

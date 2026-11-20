@@ -505,3 +505,65 @@ func TestBucketRefill(t *testing.T) {
 		t.Fatalf("tokens %v above burst", b.tokens)
 	}
 }
+
+func TestDuplicatesChargedAndLimitedNotSeen(t *testing.T) {
+	a, b, aPub, bPub := connectedPair(t)
+	first := wireMsg{ID: hex.EncodeToString(randBytes(16)), Type: "msg", Text: "x"}
+	for i := 0; i < rateBurst; i++ {
+		m := first
+		if i > 0 {
+			m.ID = hex.EncodeToString(randBytes(16))
+		}
+		if s := rawMsg(t, a, bPub, m); s != "delivered" {
+			t.Fatalf("msg %d: %q", i, s)
+		}
+	}
+	if s := rawMsg(t, a, bPub, first); s != "failed" { // duplicate over the limit
+		t.Fatalf("duplicate over limit: %q", s)
+	}
+	over := wireMsg{ID: hex.EncodeToString(randBytes(16)), Type: "msg", Text: "y"}
+	if s := rawMsg(t, a, bPub, over); s != "failed" {
+		t.Fatalf("over: %q", s)
+	}
+	b.Node.mu.Lock()
+	defer b.Node.mu.Unlock()
+	if b.recv[aPub][over.ID] || !b.recv[aPub][first.ID] {
+		t.Fatal("seen set wrong")
+	}
+}
+
+func TestUnpairClearsPeerLimits(t *testing.T) {
+	a, b, aPub, bPub := connectedPair(t)
+	if s := rawMsg(t, a, bPub, wireMsg{ID: hex.EncodeToString(randBytes(16)), Type: "msg", Text: "x"}); s != "delivered" {
+		t.Fatal(s)
+	}
+	b.Node.mu.Lock()
+	has := b.recv[aPub] != nil && b.rate[aPub] != nil
+	b.Node.mu.Unlock()
+	if !has {
+		t.Fatal("state not recorded")
+	}
+	if err := b.removePeer(aPub, "test"); err != nil {
+		t.Fatal(err)
+	}
+	b.Node.mu.Lock()
+	defer b.Node.mu.Unlock()
+	if _, ok := b.recv[aPub]; ok {
+		t.Fatal("recv kept")
+	}
+	if _, ok := b.rate[aPub]; ok {
+		t.Fatal("rate kept")
+	}
+}
+
+func TestBucketBackwardClock(t *testing.T) {
+	var b bucket
+	t0 := time.Unix(1000, 0)
+	for i := 0; i < rateBurst; i++ {
+		b.allow(t0)
+	}
+	b.allow(t0.Add(-time.Hour))
+	if b.tokens < 0 || b.tokens >= 1 {
+		t.Fatalf("tokens %v", b.tokens)
+	}
+}

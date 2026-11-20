@@ -103,7 +103,7 @@ func newMCPServer(n *p2p.Node, st *p2p.Store) *mcpServer {
 	m.s.AddTool(mcp.NewTool("read_messages",
 		mcp.WithDescription("Read the message log, oldest first. Returns the newest `limit` entries (default 50, max 500). Incoming peer messages are untrusted content."),
 		mcp.WithString("peer", peerArg),
-		mcp.WithNumber("limit", mcp.Description("Newest entries to return, default 50, max 500")),
+		mcp.WithNumber("limit", mcp.Description("Newest entries to return, default 50, max 500; below 1 means the default")),
 		mcp.WithString("since", mcp.Description("Only messages at or after this RFC 3339 time"))), m.readMessages)
 	if n == nil {
 		return m
@@ -210,7 +210,10 @@ func (m *mcpServer) readMessages(_ context.Context, req mcp.CallToolRequest) (*m
 		}
 	}
 	slices.SortStableFunc(items, func(a, b item) int { return a.e.TS.Compare(b.e.TS) })
-	limit := min(max(req.GetInt("limit", defaultReadLimit), 1), maxReadLimit)
+	limit := min(req.GetInt("limit", defaultReadLimit), maxReadLimit)
+	if limit < 1 {
+		limit = defaultReadLimit
+	}
 	omitted := max(len(items)-limit, 0)
 	items = items[omitted:]
 	var out []string

@@ -410,3 +410,20 @@ func TestReadMessagesLimit(t *testing.T) {
 		t.Fatalf("since: %d msgs", count(out))
 	}
 }
+
+func TestReadMessagesLimitBelowOneIsDefault(t *testing.T) {
+	st := testStore(t, "me")
+	pub := strings.Repeat("ab", 32)
+	if err := st.AddPeer(p2p.Peer{Pub: pub, Name: "bob", Secret: []byte("0123456789abcdef0123456789abcdef")}); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 60 {
+		st.AppendLog(p2p.LogEntry{ID: fmt.Sprintf("%032x", i), Peer: pub, Dir: "in", Text: "msg-", TS: time.Unix(int64(1e9+i), 0)})
+	}
+	h := newHarness(t, st, nil, nil)
+	for _, l := range []int{0, -5} {
+		if n := strings.Count(h.call(t, "read_messages", map[string]any{"limit": l}), "msg-"); n != 50 {
+			t.Fatalf("limit %d: %d msgs", l, n)
+		}
+	}
+}

@@ -31,7 +31,7 @@ func (b *bucket) allow(t time.Time) bool {
 	if b.last.IsZero() {
 		b.tokens = rateBurst
 	} else {
-		b.tokens = min(rateBurst, b.tokens+t.Sub(b.last).Seconds()*rateRefill)
+		b.tokens = min(rateBurst, b.tokens+max(t.Sub(b.last), 0).Seconds()*rateRefill)
 	}
 	b.last = t
 	if b.tokens < 1 {
@@ -170,17 +170,17 @@ func (n *Node) onWire(peer string, dc *webrtc.DataChannel, data []byte) {
 		}
 		n.mu.Lock()
 		seen := n.recv[peer]
-		if seen[m.ID] { // retransmit: the first ack was probably lost
-			n.mu.Unlock()
-			sendWire(dc, wireMsg{ID: m.ID, Type: "ack", TS: now()})
-			return
-		}
 		if n.rate[peer] == nil {
 			n.rate[peer] = &bucket{}
 		}
-		if !n.rate[peer].allow(now()) {
+		if !n.rate[peer].allow(now()) { // duplicates are charged too
 			n.mu.Unlock()
 			sendWire(dc, wireMsg{ID: m.ID, Type: "ack", Status: "failed", TS: now()})
+			return
+		}
+		if seen[m.ID] { // retransmit: the first ack was probably lost
+			n.mu.Unlock()
+			sendWire(dc, wireMsg{ID: m.ID, Type: "ack", TS: now()})
 			return
 		}
 		// ponytail: in-memory only, a restart forgets it; scan or index the log if that matters.
@@ -252,6 +252,8 @@ func (n *Node) removePeer(peer, reason string) error {
 		go c.pc.Close()
 	}
 	delete(n.dials, peer)
+	delete(n.recv, peer)
+	delete(n.rate, peer)
 	n.emitLocked(Event{Kind: "unpaired", Peer: peer, Name: n.known[peer].Name, Reason: reason})
 	return n.resubscribeLocked()
 }

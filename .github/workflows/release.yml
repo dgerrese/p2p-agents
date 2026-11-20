@@ -4,21 +4,36 @@ on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
-  release:
+  test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
-
+      - run: go version
       - run: go vet ./...
       - run: go test -race ./...
 
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
       - name: Build
         run: |
           mkdir dist
@@ -27,7 +42,6 @@ jobs:
               go build -trimpath -ldflags="-s -w" -o "dist/p2p-agents-${t%/*}-${t#*/}" .
           done
           cd dist && sha256sum p2p-agents-* > SHA256SUMS
-
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}

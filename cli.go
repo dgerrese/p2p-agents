@@ -37,7 +37,7 @@ func (l local) Requests() ([]p2p.PairRequest, error)    { return l.n.Requests(),
 func (l local) VerifyCodeFor(id string) (string, error) { return l.n.VerifyCodeFor(id) }
 func (l local) Accept(id, typed string) error           { return l.n.Accept(id, typed) }
 func (l local) Reject(id string) error                  { return l.n.Reject(id) }
-func (l local) Peers() ([]p2p.PeerStatus, error)        { return l.n.Peers(), nil }
+func (l local) Peers() ([]p2p.PeerStatus, error)        { return l.n.Peers() }
 func (l local) Unpair(p, r string) error                { return l.n.Unpair(p, r) }
 
 // offline answers listings from disk when no instance runs: nothing can be pending then.

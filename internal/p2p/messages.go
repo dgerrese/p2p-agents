@@ -66,10 +66,10 @@ func Fingerprint(pub string) string {
 	return pub[0:4] + " " + pub[4:8] + " " + pub[8:12] + " " + pub[12:16]
 }
 
-func (n *Node) Peers() []PeerStatus {
+func (n *Node) Peers() ([]PeerStatus, error) {
 	ps, err := n.st.Peers()
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -78,7 +78,7 @@ func (n *Node) Peers() []PeerStatus {
 		c := n.conns[p.Pub]
 		out = append(out, PeerStatus{Pub: p.Pub, Name: p.Name, Fingerprint: Fingerprint(p.Pub), Online: c != nil && c.dc != nil})
 	}
-	return out
+	return out, nil
 }
 
 // Send delivers text over peer's open channel and waits up to ackTimeout for its ack.

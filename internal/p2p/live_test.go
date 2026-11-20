@@ -83,10 +83,10 @@ func livePair(t *testing.T, a, b *Node) {
 func liveSend(t *testing.T, from, to *Node, text string) {
 	t.Helper()
 	liveWait(t, 90*time.Second, "peer online", func() bool {
-		ps := from.Peers()
+		ps := peersOf(t, from)
 		return len(ps) == 1 && ps[0].Online
 	})
-	peer := from.Peers()[0].Pub
+	peer := peersOf(t, from)[0].Pub
 	id, status, err := from.Send(context.Background(), peer, text, "")
 	if err != nil || status != "delivered" {
 		t.Fatalf("send: id=%s status=%q err=%v", id, status, err)

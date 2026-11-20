@@ -3,6 +3,8 @@ package p2p
 import (
 	"context"
 	"encoding/hex"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -82,7 +84,8 @@ func (tn *testNode) count(kind string) int {
 }
 
 func (tn *testNode) online(pub string) bool {
-	for _, p := range tn.Peers() {
+	ps, _ := tn.Peers()
+	for _, p := range ps {
 		if p.Pub == pub {
 			return p.Online
 		}
@@ -119,7 +122,7 @@ func TestMessageRoundTrip(t *testing.T) {
 	if len(lb) != 1 || lb[0].Dir != "in" || lb[0].Text != "hello bob" || lb[0].Peer != aPub {
 		t.Fatalf("B log %+v", lb)
 	}
-	ps := a.Peers()
+	ps := peersOf(t, a)
 	if len(ps) != 1 || ps[0].Name != "bob" || !ps[0].Online || ps[0].Fingerprint != bPub[0:4]+" "+bPub[4:8]+" "+bPub[8:12]+" "+bPub[12:16] {
 		t.Fatalf("peers %+v", ps)
 	}
@@ -200,8 +203,8 @@ func TestUnknownSenderDropped(t *testing.T) {
 	b.mu.Lock()
 	conns := len(b.conns)
 	b.mu.Unlock()
-	if conns != 0 || len(b.events()) != 0 || len(b.Peers()) != 1 || b.Peers()[0].Pub != aPub {
-		t.Fatalf("conns=%d events=%+v peers=%+v", conns, b.events(), b.Peers())
+	if conns != 0 || len(b.events()) != 0 || len(peersOf(t, b)) != 1 || peersOf(t, b)[0].Pub != aPub {
+		t.Fatalf("conns=%d events=%+v peers=%+v", conns, b.events(), peersOf(t, b))
 	}
 }
 
@@ -216,8 +219,8 @@ func TestUnpairNotifies(t *testing.T) {
 	if e := b.waitEvent(t, "unpaired"); e.Peer != aPub || e.Reason != "testing" {
 		t.Fatalf("B event %+v", e)
 	}
-	if len(a.Peers()) != 0 || len(b.Peers()) != 0 {
-		t.Fatalf("peers left: A=%+v B=%+v", a.Peers(), b.Peers())
+	if len(peersOf(t, a)) != 0 || len(peersOf(t, b)) != 0 {
+		t.Fatalf("peers left: A=%+v B=%+v", peersOf(t, a), peersOf(t, b))
 	}
 }
 
@@ -232,7 +235,7 @@ func TestUnpairOfflineNotifies(t *testing.T) {
 	if e := b.waitEvent(t, "unpaired"); e.Peer != aPub {
 		t.Fatalf("B event %+v", e)
 	}
-	if len(b.Peers()) != 0 {
+	if len(peersOf(t, b)) != 0 {
 		t.Fatal("B still has A")
 	}
 }
@@ -391,5 +394,24 @@ func TestPairThenMessage(t *testing.T) {
 	}
 	if e := a.waitEvent(t, "message"); e.Text != "hi from b" || e.Peer != bPub || e.ID != id {
 		t.Fatalf("event %+v", e)
+	}
+}
+
+func peersOf(t *testing.T, n interface{ Peers() ([]PeerStatus, error) }) []PeerStatus {
+	t.Helper()
+	ps, err := n.Peers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ps
+}
+
+func TestPeersSurfacesStoreError(t *testing.T) {
+	tn := newIdleNode(t, NewMemBus())
+	if err := os.WriteFile(filepath.Join(tn.st.Dir, "peers.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ps, err := tn.Peers(); err == nil {
+		t.Fatalf("corrupt peers.json: got %+v, nil error", ps)
 	}
 }

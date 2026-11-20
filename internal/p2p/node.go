@@ -1,0 +1,239 @@
+package p2p
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"maps"
+	"slices"
+	"sync"
+	"time"
+
+	"github.com/nbd-wtf/go-nostr"
+)
+
+// Event is what the Node reports to the MCP/CLI layer. It never carries a verify code.
+type Event struct {
+	Kind   string `json:"kind"` // message|pair_request|paired|pair_failed|peer_online|peer_offline|unpaired
+	Peer   string `json:"peer,omitempty"`
+	Name   string `json:"name,omitempty"`
+	Text   string `json:"text,omitempty"`
+	ID     string `json:"id,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// box is a mailbox the node listens on.
+type box struct {
+	sk   string
+	peer string // paired peer pub; "" for pairing mailboxes
+}
+
+type Node struct {
+	st      *Store
+	sk, pub string
+	name    string
+	sigs    []Signal
+	events  chan Event
+
+	mu      sync.Mutex
+	closed  bool
+	invites map[string]*invite  // by one-time mailbox pub
+	reqs    map[string]*pairReq // by request ID
+	boxes   map[string]box      // subscribed mailbox pub -> key
+	window  int64
+	seen    map[string]bool // inner event IDs, only touched by the Run goroutine
+}
+
+// NewNode takes ownership of the signals; either may be nil, not both.
+func NewNode(st *Store, lan, relay Signal) (*Node, error) {
+	var sigs []Signal
+	for _, s := range []Signal{lan, relay} {
+		if s != nil {
+			sigs = append(sigs, s)
+		}
+	}
+	if len(sigs) == 0 {
+		return nil, errors.New("no signal transport")
+	}
+	sk, pub, err := st.Identity()
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := st.Config()
+	if err != nil {
+		return nil, err
+	}
+	n := &Node{
+		st: st, sk: sk, pub: pub, name: cfg.Name, sigs: sigs,
+		events:  make(chan Event, 256),
+		invites: map[string]*invite{}, reqs: map[string]*pairReq{}, seen: map[string]bool{},
+	}
+	return n, n.resubscribe()
+}
+
+func (n *Node) Events() <-chan Event { return n.events }
+
+// Run processes incoming envelopes until ctx is done, then closes the signals and Events.
+func (n *Node) Run(ctx context.Context) error {
+	in := make(chan nostr.Event)
+	for _, s := range n.sigs {
+		go func() {
+			for ev := range s.Events() {
+				select {
+				case in <- ev:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+	defer func() {
+		for _, s := range n.sigs {
+			s.Close()
+		}
+		n.mu.Lock()
+		n.closed = true
+		close(n.events)
+		n.mu.Unlock()
+	}()
+	tick := time.NewTicker(time.Minute)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case ev := <-in:
+			n.handle(ev)
+		case <-tick.C:
+			n.mu.Lock()
+			rotate := Window(now()) != n.window
+			n.mu.Unlock()
+			if rotate {
+				n.resubscribe()
+			}
+		}
+	}
+}
+
+func (n *Node) handle(ev nostr.Event) {
+	tag := ev.Tags.Find("p")
+	if len(tag) < 2 {
+		return
+	}
+	n.mu.Lock()
+	b, ok := n.boxes[tag[1]]
+	n.mu.Unlock()
+	if !ok {
+		return
+	}
+	p, sender, innerID, err := Open(ev, b.sk)
+	if err != nil || sender == n.pub || n.markSeen(innerID) {
+		return
+	}
+	switch p.Type {
+	case "pair_req", "pair_resp", "pair_ok", "pair_no":
+		if b.peer == "" {
+			n.handlePair(tag[1], p, sender)
+		}
+		// Task 5: knock|offer|answer|bye on peer mailboxes (b.peer != "", require sender == b.peer).
+	}
+}
+
+// markSeen records an inner event ID and reports whether it was seen before.
+func (n *Node) markSeen(id string) bool {
+	if len(n.seen) > 10000 { // ponytail: wholesale reset lets an old replay through within maxSkew, use an LRU if that matters
+		n.seen = map[string]bool{}
+	}
+	dup := n.seen[id]
+	n.seen[id] = true
+	return dup
+}
+
+func (n *Node) resubscribe() error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.resubscribeLocked()
+}
+
+// resubscribeLocked drops expired invites and recomputes the mailbox set:
+// pending invites, pending pairing requests, and each peer's windows w-1..w+1.
+func (n *Node) resubscribeLocked() error {
+	peers, err := n.st.Peers()
+	if err != nil {
+		return err
+	}
+	t := now()
+	n.window = Window(t)
+	boxes := map[string]box{}
+	for pub, inv := range n.invites {
+		if t.After(inv.expires) {
+			delete(n.invites, pub)
+			continue
+		}
+		boxes[pub] = box{sk: inv.sk}
+	}
+	for _, r := range n.reqs {
+		boxes[r.listenPub] = box{sk: r.listenSK}
+	}
+	for _, p := range peers {
+		if len(p.Secret) == 0 { // MailboxKey panics on it; a broken entry must not kill the node
+			continue
+		}
+		for w := n.window - 1; w <= n.window+1; w++ {
+			sk, pub := MailboxKey(p.Secret, w)
+			boxes[pub] = box{sk: sk, peer: p.Pub}
+		}
+	}
+	n.boxes = boxes
+	pubs := slices.Collect(maps.Keys(boxes))
+	for _, s := range n.sigs {
+		s.Subscribe(pubs)
+	}
+	return nil
+}
+
+// emitLocked never blocks; callers hold n.mu.
+func (n *Node) emitLocked(e Event) {
+	if n.closed {
+		return
+	}
+	select {
+	case n.events <- e:
+	default: // ponytail: drops when 256 events go unread, block or grow if consumers lag in practice
+	}
+}
+
+// seal wraps a payload for mailbox; callers publish the result after releasing n.mu.
+func (n *Node) seal(typ string, data any, mailbox string) *nostr.Event {
+	d, err := json.Marshal(data)
+	if err != nil {
+		return nil
+	}
+	ev, err := Seal(Payload{Type: typ, Data: d}, n.sk, mailbox)
+	if err != nil {
+		return nil
+	}
+	return &ev
+}
+
+// publish sends ev on every signal and succeeds if any did (Task 5 adds LAN-first timing).
+func (n *Node) publish(ev *nostr.Event) error {
+	if ev == nil {
+		return errors.New("seal failed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var err error
+	sent := false
+	for _, s := range n.sigs {
+		if e := s.Publish(ctx, *ev); e != nil {
+			err = e
+		} else {
+			sent = true
+		}
+	}
+	if sent {
+		return nil
+	}
+	return err
+}

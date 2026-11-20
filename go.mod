@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0
 	github.com/nbd-wtf/go-nostr v0.52.3
+	golang.org/x/net v0.50.0
 )
 
 require (
@@ -32,6 +33,5 @@ require (
 	golang.org/x/arch v0.15.0 // indirect
 	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/exp v0.0.0-20250305212735-054e65f0b394 // indirect
-	golang.org/x/net v0.50.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
 )

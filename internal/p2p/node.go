@@ -32,12 +32,13 @@ type box struct {
 }
 
 type Node struct {
-	st      *Store
-	sk, pub string
-	name    string
-	sigs    []Signal // LAN first when both are set
-	stun    []string
-	events  chan Event
+	st         *Store
+	sk, pub    string
+	name       string
+	sigs       []Signal // LAN first when both are set
+	stun       []string
+	events     chan Event
+	ackTimeout time.Duration // how long Send waits for an ack
 
 	connected atomic.Int32 // PeerConnections that reached connected; for tests
 
@@ -51,7 +52,9 @@ type Node struct {
 	known   map[string]Peer // paired peers by pub, refreshed on resubscribe
 	conns   map[string]*peerConn
 	dials   map[string]*dialState
-	acks    map[string]chan string // message ID -> ack status
+	acks    map[string]chan string     // message ID -> ack status
+	recv    map[string]map[string]bool // peer -> incoming message IDs already handled
+	rate    map[string]*bucket         // peer -> incoming rate limiter
 }
 
 var newRelays = NewRelays // seam for TestLANOnlyNoRelays
@@ -99,9 +102,10 @@ func NewNode(st *Store, lan, relay Signal) (*Node, error) {
 	}
 	n := &Node{
 		st: st, sk: sk, pub: pub, name: cfg.Name, sigs: sigs, stun: cfg.STUN,
-		events:  make(chan Event, 256),
+		events: make(chan Event, 256), ackTimeout: ackTimeout,
 		invites: map[string]*invite{}, reqs: map[string]*pairReq{}, seen: map[string]bool{},
 		conns: map[string]*peerConn{}, dials: map[string]*dialState{}, acks: map[string]chan string{},
+		recv: map[string]map[string]bool{}, rate: map[string]*bucket{},
 	}
 	if cfg.LANOnly { // STUN would disclose the public IP; host candidates suffice on a LAN
 		n.stun = nil

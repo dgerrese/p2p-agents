@@ -172,6 +172,7 @@ type LogEntry struct {
 	Text    string    `json:"text"`
 	ReplyTo string    `json:"reply_to,omitempty"`
 	TS      time.Time `json:"ts"`
+	Status  string    `json:"status,omitempty"` // out: "delivered" or "unconfirmed"
 }
 
 func (s *Store) logPath(peer string) (string, error) {

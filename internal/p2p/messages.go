@@ -15,10 +15,33 @@ import (
 const (
 	maxText        = 64 << 10
 	maxReasonRunes = 500
+	ackTimeout     = 10 * time.Second
+	rateBurst      = 10  // incoming messages per peer allowed at once
+	rateRefill     = 0.5 // tokens per second (30 per minute)
+	maxSeenIDs     = 10000
 )
 
+// bucket is a token bucket; callers serialise access.
+type bucket struct {
+	tokens float64
+	last   time.Time
+}
+
+func (b *bucket) allow(t time.Time) bool {
+	if b.last.IsZero() {
+		b.tokens = rateBurst
+	} else {
+		b.tokens = min(rateBurst, b.tokens+max(t.Sub(b.last), 0).Seconds()*rateRefill)
+	}
+	b.last = t
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
+}
+
 var (
-	ackTimeout     = 10 * time.Second
 	errUnknownPeer = errors.New("unknown peer")
 )
 
@@ -82,7 +105,8 @@ func (n *Node) Peers() ([]PeerStatus, error) {
 }
 
 // Send delivers text over peer's open channel and waits up to ackTimeout for its ack.
-// Without an open channel it returns "offline" at once.
+// Without an open channel it returns "offline" at once. If no ack arrives in time it returns
+// "unconfirmed": the peer may still have the message.
 func (n *Node) Send(ctx context.Context, peerPub, text, replyTo string) (id, status string, err error) {
 	if len(text) > maxText {
 		return "", "", fmt.Errorf("message too large: %d bytes, max %d", len(text), maxText)
@@ -113,13 +137,13 @@ func (n *Node) Send(ctx context.Context, peerPub, text, replyTo string) (id, sta
 	}
 	select {
 	case status = <-ack:
-	case <-time.After(ackTimeout):
-		status = "failed"
+	case <-time.After(n.ackTimeout):
+		status = "unconfirmed"
 	case <-ctx.Done():
 		return id, "failed", ctx.Err()
 	}
-	if status == "delivered" {
-		if err := n.st.AppendLog(LogEntry{ID: id, Peer: peerPub, Dir: "out", Text: text, ReplyTo: replyTo, TS: m.TS}); err != nil {
+	if status == "delivered" || status == "unconfirmed" {
+		if err := n.st.AppendLog(LogEntry{ID: id, Peer: peerPub, Dir: "out", Text: text, ReplyTo: replyTo, TS: m.TS, Status: status}); err != nil {
 			log.Printf("log write failed: %v", err)
 		}
 	}
@@ -144,6 +168,28 @@ func (n *Node) onWire(peer string, dc *webrtc.DataChannel, data []byte) {
 			sendWire(dc, wireMsg{ID: m.ID, Type: "ack", Status: "failed", TS: now()})
 			return
 		}
+		n.mu.Lock()
+		seen := n.recv[peer]
+		if n.rate[peer] == nil {
+			n.rate[peer] = &bucket{}
+		}
+		if !n.rate[peer].allow(now()) { // duplicates are charged too
+			n.mu.Unlock()
+			sendWire(dc, wireMsg{ID: m.ID, Type: "ack", Status: "failed", TS: now()})
+			return
+		}
+		if seen[m.ID] { // retransmit: the first ack was probably lost
+			n.mu.Unlock()
+			sendWire(dc, wireMsg{ID: m.ID, Type: "ack", TS: now()})
+			return
+		}
+		// ponytail: in-memory only, a restart forgets it; scan or index the log if that matters.
+		if seen == nil || len(seen) >= maxSeenIDs {
+			seen = map[string]bool{}
+			n.recv[peer] = seen
+		}
+		seen[m.ID] = true
+		n.mu.Unlock()
 		if err := n.st.AppendLog(LogEntry{ID: m.ID, Peer: peer, Dir: "in", Text: m.Text, ReplyTo: m.ReplyTo, TS: now()}); err != nil {
 			log.Printf("log write failed: %v", err)
 		}
@@ -206,6 +252,8 @@ func (n *Node) removePeer(peer, reason string) error {
 		go c.pc.Close()
 	}
 	delete(n.dials, peer)
+	delete(n.recv, peer)
+	delete(n.rate, peer)
 	n.emitLocked(Event{Kind: "unpaired", Peer: peer, Name: n.known[peer].Name, Reason: reason})
 	return n.resubscribeLocked()
 }

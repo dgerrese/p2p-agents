@@ -50,23 +50,24 @@ func (r *relaySignal) Subscribe(pubs []string) {
 	ctx, cancel := context.WithCancel(r.ctx)
 	r.cancelSub = cancel
 	since := nostr.Timestamp(time.Now().Add(-60 * time.Second).Unix())
-	ch := r.pool.SubscribeMany(ctx, r.urls, nostr.Filter{
-		Kinds: []int{EnvelopeKind},
-		Tags:  nostr.TagMap{"p": pubs},
-		Since: &since,
-	})
-	go func() {
-		for re := range ch {
-			ev := *re.Event
-			if ev.Kind != EnvelopeKind {
-				continue
+	f := nostr.Filter{Kinds: []int{EnvelopeKind}, Tags: nostr.TagMap{"p": pubs}, Since: &since}
+	// One SubscribeMany per relay: with several URLs, go-nostr v0.52.3 can close its event
+	// channel twice when the workers exit together (pool.go subMany), which panics.
+	for _, url := range r.urls {
+		ch := r.pool.SubscribeMany(ctx, []string{url}, f)
+		go func() {
+			for re := range ch {
+				ev := *re.Event
+				if ev.Kind != EnvelopeKind {
+					continue
+				}
+				if ok, err := ev.CheckSignature(); err != nil || !ok {
+					continue
+				}
+				r.deliver(ev)
 			}
-			if ok, err := ev.CheckSignature(); err != nil || !ok {
-				continue
-			}
-			r.deliver(ev)
-		}
-	}()
+		}()
+	}
 }
 
 func (r *relaySignal) Events() <-chan nostr.Event { return r.out }

@@ -17,6 +17,8 @@ import (
 	"p2p-agents/internal/p2p"
 )
 
+func init() { p2p.UseLoopbackICE() }
+
 // testStore is a store whose node never reaches a real STUN server or relay
 // (an unresolvable STUN host fails fast, so ICE gathering does not wait for its timeout).
 func testStore(t *testing.T, name string) *p2p.Store {

@@ -9,17 +9,9 @@ import (
 	"time"
 
 	"github.com/nbd-wtf/go-nostr"
-	"github.com/pion/webrtc/v4"
 )
 
-// Loopback-only IPv4 host candidates: fast and deterministic ICE on machines with many interfaces.
-func init() {
-	rtcAPI = newRTCAPI(func(se *webrtc.SettingEngine) {
-		se.SetIncludeLoopbackCandidate(true)
-		se.SetInterfaceFilter(func(name string) bool { return strings.HasPrefix(name, "lo") })
-		se.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
-	})
-}
+func init() { UseLoopbackICE() }
 
 // pairedStores returns two stores that already know each other, with A's pub < B's pub (A offers).
 func pairedStores(t *testing.T) (a, b *Store, aPub, bPub string) {

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -25,6 +26,16 @@ var (
 )
 
 var rtcAPI = newRTCAPI(nil)
+
+// UseLoopbackICE limits ICE to IPv4 loopback host candidates, for fast, deterministic
+// connections in tests on machines with many interfaces. Tests only; call before any Node starts.
+func UseLoopbackICE() {
+	rtcAPI = newRTCAPI(func(se *webrtc.SettingEngine) {
+		se.SetIncludeLoopbackCandidate(true)
+		se.SetInterfaceFilter(func(name string) bool { return strings.HasPrefix(name, "lo") })
+		se.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
+	})
+}
 
 // newRTCAPI silences pion logging; tune lets tests restrict candidates.
 func newRTCAPI(tune func(*webrtc.SettingEngine)) *webrtc.API {

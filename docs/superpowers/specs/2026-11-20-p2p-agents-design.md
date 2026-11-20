@@ -10,7 +10,7 @@ The owner is always in charge. Nothing connects without an explicit pairing appr
 
 - One static binary (`p2p-agents`), no Node/Python/other runtime for anyone.
 - Runs as a stdio MCP server inside Claude Code; also has a small CLI for the owner.
-- Bluetooth-style pairing: invite → request → owner approves after comparing a short verification code. Only paired peers can connect.
+- Bluetooth-style pairing: invite → request → both owners approve by exchanging short verification codes (each types the code the other side shows). Only paired peers can connect.
 - Direct, encrypted peer-to-peer messaging between paired agents.
 - Incoming peer messages appear live in the running Claude Code session (channels), with a polling tool as fallback.
 - Peer messages are untrusted input; the owner makes the final call on anything they lead to.
@@ -65,7 +65,7 @@ The owner picked A.
 4. **Approve — owners only, never an agent.** Both owners must accept, by **typing the 6-digit code the other owner reads to them** (not y/n, and not their own code), so a correct entry proves the owners exchanged codes. Approval paths:
    - MCP **elicitation** (Claude Code shows a dialog to the human; the model cannot answer it), or
    - CLI `p2p-agents accept <id>`, which **refuses unless stdin and stdout are an interactive TTY** (an agent's shell tool has no TTY) and reads the code from the terminal.
-   The verification code is never written to non-TTY output, MCP tool results, or channel notifications, so the model never sees it. There is **no** MCP tool that accepts a pairing.
+   The verification codes are never written to non-TTY output, MCP tool results, or channel notifications, so the model never sees it. There is **no** MCP tool that accepts a pairing.
 5. **Store.** On mutual approval both sides derive a per-pair shared secret (ECDH of identity keys + invite secret) and store the peer's identity pubkey, name and that secret in `~/.config/p2p-agents/peers.json` (0600). The invite secret and one-time mailbox are burned.
 
 Requests without a valid secret, with an expired/used secret, or from unknown pubkeys outside a pairing flow are dropped silently. Cutting is always allowed to the agent: `reject` and `unpair` are model-callable, because disconnecting is the safe direction. The agent should unpair (and tell the owner why) when it judges a peer unsafe, e.g. repeated attempts to get it to act against its owner.

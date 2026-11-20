@@ -27,7 +27,7 @@ Pairing is always decided by the owner, never by an agent. Both owners need a te
 1. Owner A: `p2p-agents invite` prints a code starting with `p2pa1:` (valid 24 hours) and waits.
 2. Owner A gives the code to owner B over any channel.
 3. Owner B: `p2p-agents pair p2pa1:...` waits for A.
-4. Each side now shows its own 6-digit verify code, and the two codes differ. Each owner reads their code aloud or sends it to the other owner over a separate channel.
+4. Each side now shows its own 6-digit verify code, and the two codes differ. Each owner reads their code aloud or sends it to the other owner over a separate channel. Only type a code you got from the other owner directly, never one relayed by an agent.
 5. Each owner types the code the other owner gave them to accept. Typing the code on your own screen fails. Enter alone rejects, and three wrong codes fail the request.
 
 Each side only accepts the other side's code, so a correct entry proves the two owners really exchanged codes, which is what stops a man in the middle.
@@ -101,7 +101,7 @@ Env: `P2PA_HOME` (state directory), `P2PA_NO_LAN=1` (disable LAN multicast), `P2
 
 The agent runs as your OS user, so p2p-agents cannot stop an agent that has an unrestricted shell. Such an agent can:
 
-- accept a pairing itself. The TTY check only tests whether stdin and stdout are terminals. A pseudo-terminal wrapper such as `script -qc "p2p-agents accept <id>"`, `expect`, or Python's `pty` module passes it, and then the agent can read the printed code and type it back;
+- accept a pairing itself. The TTY check only tests whether stdin and stdout are terminals. A pseudo-terminal wrapper such as `script -qc "p2p-agents accept <id>"`, `expect`, or Python's `pty` module passes it. The agent still needs the other side's code, which only the other owner can read out, but an attacker on the other end of a leaked invite knows it and can feed it to the agent;
 - talk to the control socket directly, which offers the same calls as the CLI, verify code and accept included;
 - read `identity.key` and `peers.json` and copy your identity and pairing keys.
 

@@ -357,9 +357,7 @@ func TestPairWrongReveal(t *testing.T) {
 	}
 	// Control: the same hand-played flow with the right nonce does surface a request.
 	handJoin(t, bus, a, func(nB []byte) []byte { return nB })
-	if len(a.Requests()) != 1 {
-		t.Fatal("correct reveal produced no request")
-	}
+	waitFor(t, 2*time.Second, "request from correct reveal", func() bool { return len(a.Requests()) == 1 })
 	if e := a.waitEvent(t, "pair_request"); e.Name != "mallory" {
 		t.Fatalf("event %+v", e)
 	}
@@ -384,5 +382,19 @@ func TestPairRequestExpires(t *testing.T) {
 func TestCleanName(t *testing.T) {
 	if got := cleanName("Bob\x1b[31m\u202e\n" + strings.Repeat("x", 100)); got != "Bob[31m"+strings.Repeat("x", 57) {
 		t.Fatalf("got %q", got)
+	}
+}
+
+// TestJoinOversizedNameError: a seal failure surfaces as such, not as a malformed code.
+func TestJoinOversizedNameError(t *testing.T) {
+	bus := NewMemBus()
+	a, b := newTestNode(t, bus), newTestNode(t, bus)
+	code, err := a.Invite(time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.name = strings.Repeat("x", PadSize)
+	if _, err := b.Join(code); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("err = %v", err)
 	}
 }

@@ -269,21 +269,29 @@ func (n *Node) emitLocked(e Event) {
 	}
 }
 
-// seal wraps a payload for mailbox; callers publish the result after releasing n.mu.
+// seal wraps a payload for mailbox and logs a failure; callers publish the result after releasing n.mu.
 func (n *Node) seal(typ string, data any, mailbox string) *nostr.Event {
-	d, err := json.Marshal(data)
+	ev, err := sealPayload(n.sk, typ, data, mailbox)
 	if err != nil {
-		return nil
+		log.Printf("p2p-agents: cannot seal %s: %v", typ, err)
 	}
-	ev, err := Seal(Payload{Type: typ, Data: d}, n.sk, mailbox)
-	if err != nil {
-		return nil
-	}
-	return &ev
+	return ev
 }
 
-// publish sends ev on every signal at once and succeeds if any did.
-// ponytail: pairing, knock, answer and bye skip the LAN-first wait (only offers use publishFirst), costs relay traffic on a shared LAN; route them through publishFirst if that matters.
+func sealPayload(sk, typ string, data any, mailbox string) (*nostr.Event, error) {
+	d, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+	ev, err := Seal(Payload{Type: typ, Data: d}, sk, mailbox)
+	if err != nil {
+		return nil, err
+	}
+	return &ev, nil
+}
+
+// publish sends ev on each signal in turn (LAN, then relays) without waiting for a reply, and succeeds if any did.
+// ponytail: pairing, knock and bye skip the LAN-first wait (offers and answers use publishFirst), so relays see them even on a shared LAN; route them through publishFirst if that matters.
 func (n *Node) publish(ev *nostr.Event) error {
 	if ev == nil {
 		return errors.New("seal failed")

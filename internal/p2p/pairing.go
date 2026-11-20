@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 	"unicode"
@@ -160,9 +161,9 @@ func (n *Node) Join(code string) (string, error) {
 	nB := randBytes(32)
 	commit := sha256.Sum256(nB)
 	// ponytail: c.R is ignored, Join uses this node's own signals; owners with disjoint custom relays can't pair over relays until Join dials c.R too.
-	ev := n.seal("pair_req", pairMsg{Name: n.name, Commit: commit[:], MAC: pairMAC(c.S, "req", n.pub)}, c.M)
-	if ev == nil {
-		return "", errors.New("malformed invite code")
+	ev, err := sealPayload(n.sk, "pair_req", pairMsg{Name: n.name, Commit: commit[:], MAC: pairMAC(c.S, "req", n.pub)}, c.M)
+	if err != nil {
+		return "", fmt.Errorf("cannot build pairing request: %w", err)
 	}
 	lsk, lpub := MailboxKey(c.S, replyWindow)
 	r := &pairReq{

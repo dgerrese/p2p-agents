@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"sync/atomic"
 	"time"
 
 	"github.com/nbd-wtf/go-nostr"
@@ -43,6 +44,7 @@ type peerConn struct {
 	created   time.Time
 	dc        *webrtc.DataChannel // set once the channel is open: the peer is online
 	answered  chan struct{}       // offerer: closed when the answer arrives
+	opened    chan struct{}       // closed when dc opens
 	gotAnswer bool
 }
 
@@ -138,7 +140,17 @@ func (n *Node) newConn(peer, sid string) *peerConn {
 	if err != nil {
 		return nil
 	}
-	c := &peerConn{pc: pc, sid: sid, created: now(), answered: make(chan struct{})}
+	c := &peerConn{pc: pc, sid: sid, created: now(), answered: make(chan struct{}), opened: make(chan struct{})}
+	// Only the answerer accepts one remote channel, the offerer's "p2pa"; every other one is
+	// closed before it opens, so a peer cannot make us run a read loop per stream.
+	var took atomic.Bool
+	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
+		if n.pub > peer && dc.Label() == "p2pa" && took.CompareAndSwap(false, true) {
+			n.watchDC(peer, c, dc)
+			return
+		}
+		dc.Close()
+	})
 	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
 		switch s {
 		case webrtc.PeerConnectionStateConnected:
@@ -225,11 +237,6 @@ func (n *Node) answer(peer string, m sdpMsg) {
 	if c == nil {
 		return
 	}
-	c.pc.OnDataChannel(func(dc *webrtc.DataChannel) {
-		if dc.Label() == "p2pa" {
-			n.watchDC(peer, c, dc)
-		}
-	})
 	if err := c.pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: m.SDP}); err != nil {
 		n.dropConn(peer, c)
 		return
@@ -246,7 +253,7 @@ func (n *Node) answer(peer string, m sdpMsg) {
 	}
 	ev := n.sealToLocked(peer, "answer", sdpMsg{SID: m.SID, SDP: sdp})
 	n.mu.Unlock()
-	n.publish(ev)
+	n.publishFirst(ev, c.opened)
 }
 
 func (n *Node) applyAnswer(peer string, m sdpMsg) {
@@ -272,6 +279,7 @@ func (n *Node) watchDC(peer string, c *peerConn, dc *webrtc.DataChannel) {
 			return
 		}
 		c.dc = dc
+		close(c.opened)
 		if d := n.dials[peer]; d != nil { // reconnect right away if it drops
 			d.next, d.backoff = time.Time{}, offerBase
 		}

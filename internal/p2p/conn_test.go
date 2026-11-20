@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/hex"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/nbd-wtf/go-nostr"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -315,5 +317,87 @@ func TestLANOnlyNoSTUN(t *testing.T) {
 		if got := len(n.stun) == 0; got != lanOnly {
 			t.Fatalf("lan_only=%v: stun=%v", lanOnly, n.stun)
 		}
+	}
+}
+
+// TestExtraDataChannelsClosed: the answerer keeps only the offerer's first "p2pa" channel.
+func TestExtraDataChannelsClosed(t *testing.T) {
+	a, _, _, bPub := connectedPair(t) // A offers, B answers
+	a.mu.Lock()
+	pc := a.conns[bPub].pc
+	a.mu.Unlock()
+	for _, label := range []string{"evil", "p2pa"} {
+		dc, err := pc.CreateDataChannel(label, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		closed := make(chan struct{})
+		dc.OnClose(func() { close(closed) })
+		select {
+		case <-closed:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("extra %q channel left open by the answerer", label)
+		}
+	}
+	if !a.online(bPub) {
+		t.Fatal("main channel dropped")
+	}
+}
+
+type countSig struct {
+	Signal
+	n atomic.Int32
+}
+
+func (c *countSig) Publish(ctx context.Context, ev nostr.Event) error {
+	c.n.Add(1)
+	return c.Signal.Publish(ctx, ev)
+}
+
+// TestLANFirstConnect: on a shared LAN, offer and answer never reach the relays; only B's knock does.
+func TestLANFirstConnect(t *testing.T) {
+	sa, sb, aPub, bPub := pairedStores(t)
+	lan, relays := NewMemBus(), NewMemBus()
+	var nodes [2]*testNode
+	var rel [2]*countSig
+	for i, st := range []*Store{sa, sb} {
+		rel[i] = &countSig{Signal: relays.Join()}
+		n, err := NewNode(st, lan.Join(), rel[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.stun = nil
+		nodes[i] = &testNode{Node: n, st: st}
+		go func() {
+			for range n.Events() {
+			}
+		}()
+		run(t, nodes[i])
+	}
+	waitFor(t, 10*time.Second, "connection", func() bool { return nodes[0].online(bPub) && nodes[1].online(aPub) })
+	time.Sleep(lanWait + time.Second) // a fallback would have gone out by now
+	if a, b := rel[0].n.Load(), rel[1].n.Load(); a != 0 || b != 1 {
+		t.Fatalf("relay publishes: A=%d (want 0) B=%d (want 1, the knock)", a, b)
+	}
+}
+
+// TestPairThenMessage chains pairing and connecting: pair over the protocol, then message.
+func TestPairThenMessage(t *testing.T) {
+	bus := NewMemBus()
+	a, b := newTestNode(t, bus), newTestNode(t, bus)
+	aID, bID := pairUp(t, a, b)
+	accept(t, a, aID)
+	accept(t, b, bID)
+	a.waitEvent(t, "paired")
+	b.waitEvent(t, "paired")
+	_, aPub, _ := a.st.Identity()
+	_, bPub, _ := b.st.Identity()
+	waitFor(t, 15*time.Second, "connection", func() bool { return a.online(bPub) && b.online(aPub) })
+	id, status, err := b.Send(context.Background(), aPub, "hi from b", "")
+	if err != nil || status != "delivered" {
+		t.Fatalf("send: %q %v", status, err)
+	}
+	if e := a.waitEvent(t, "message"); e.Text != "hi from b" || e.Peer != bPub || e.ID != id {
+		t.Fatalf("event %+v", e)
 	}
 }

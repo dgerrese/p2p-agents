@@ -14,8 +14,11 @@ import (
 func newID(t *testing.T) (sk, pub string) {
 	t.Helper()
 	sk = nostr.GeneratePrivateKey()
-	pub, _ = nostr.GetPublicKey(sk)
-	return
+	pub, err := nostr.GetPublicKey(sk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sk, pub
 }
 
 func pl(n int) Payload {
@@ -29,7 +32,7 @@ func TestSealOpenRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, sender, err := Open(ev, msk)
+	p, sender, _, err := Open(ev, msk)
 	if err != nil || sender != ipub || p.Type != "offer" || string(p.Data) != string(pl(10).Data) {
 		t.Fatalf("%v %v %v", p, sender, err)
 	}
@@ -38,10 +41,22 @@ func TestSealOpenRoundTrip(t *testing.T) {
 func TestSealHidesIdentity(t *testing.T) {
 	isk, ipub := newID(t)
 	_, mpub := MailboxKey([]byte("s"), 1)
-	a, _ := Seal(pl(10), isk, mpub)
-	b, _ := Seal(pl(10), isk, mpub)
-	npub, _ := nip19.EncodePublicKey(ipub)
-	j, _ := json.Marshal(a)
+	a, err := Seal(pl(10), isk, mpub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := Seal(pl(10), isk, mpub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	npub, err := nip19.EncodePublicKey(ipub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, err := json.Marshal(a)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if strings.Contains(string(j), ipub) || strings.Contains(string(j), npub) || a.PubKey == ipub {
 		t.Fatal("identity leaked")
 	}
@@ -67,20 +82,26 @@ func TestOpenWrongMailbox(t *testing.T) {
 	isk, _ := newID(t)
 	_, apub := MailboxKey([]byte("a"), 1)
 	bsk, bpub := MailboxKey([]byte("b"), 1)
-	ev, _ := Seal(pl(10), isk, apub)
-	if _, _, err := Open(ev, bsk); err == nil {
+	ev, err := Seal(pl(10), isk, apub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := Open(ev, bsk); err == nil {
 		t.Fatal("wrong mailbox opened")
 	}
 	// replay: inner sealed for A, re-wrapped to B
 	inner := sealInner(t, isk, apub, now())
-	if _, _, err := Open(wrap(t, inner, bpub), bsk); err == nil {
+	if _, _, _, err := Open(wrap(t, inner, bpub), bsk); err == nil {
 		t.Fatal("replay accepted")
 	}
 }
 
 func sealInner(t *testing.T, isk, mpub string, at time.Time) nostr.Event {
 	t.Helper()
-	c, _ := json.Marshal(pl(5))
+	c, err := json.Marshal(pl(5))
+	if err != nil {
+		t.Fatal(err)
+	}
 	in := nostr.Event{Kind: EnvelopeKind, CreatedAt: nostr.Timestamp(at.Unix()), Tags: nostr.Tags{{"m", mpub}}, Content: string(c)}
 	if err := in.Sign(isk); err != nil {
 		t.Fatal(err)
@@ -91,14 +112,22 @@ func sealInner(t *testing.T, isk, mpub string, at time.Time) nostr.Event {
 func wrap(t *testing.T, in nostr.Event, mpub string) nostr.Event {
 	t.Helper()
 	ts := nostr.GeneratePrivateKey()
-	k, _ := nip44.GenerateConversationKey(mpub, ts)
-	j, _ := json.Marshal(in)
+	k, err := nip44.GenerateConversationKey(mpub, ts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
 	c, err := nip44.Encrypt(string(j)+strings.Repeat(" ", PadSize-len(j)), k)
 	if err != nil {
 		t.Fatal(err)
 	}
 	out := nostr.Event{Kind: EnvelopeKind, CreatedAt: in.CreatedAt, Tags: nostr.Tags{{"p", mpub}}, Content: c}
-	out.Sign(ts)
+	if err := out.Sign(ts); err != nil {
+		t.Fatal(err)
+	}
 	return out
 }
 
@@ -109,7 +138,7 @@ func TestOpenStale(t *testing.T) {
 		age time.Duration
 		ok  bool
 	}{{11 * time.Minute, false}, {9 * time.Minute, true}, {-11 * time.Minute, false}, {-9 * time.Minute, true}} {
-		_, _, err := Open(wrap(t, sealInner(t, isk, mpub, now().Add(-c.age)), mpub), msk)
+		_, _, _, err := Open(wrap(t, sealInner(t, isk, mpub, now().Add(-c.age)), mpub), msk)
 		if (err == nil) != c.ok {
 			t.Fatalf("age %v: err=%v", c.age, err)
 		}
@@ -140,7 +169,35 @@ func TestPairSecretSymmetric(t *testing.T) {
 	ask, apub := newID(t)
 	bsk, bpub := newID(t)
 	inv := []byte("invite")
-	if string(PairSecret(ask, bpub, inv)) != string(PairSecret(bsk, apub, inv)) {
-		t.Fatal("differ")
+	x, err1 := PairSecret(ask, bpub, inv)
+	y, err2 := PairSecret(bsk, apub, inv)
+	if err1 != nil || err2 != nil || len(x) != 32 || string(x) != string(y) {
+		t.Fatal("differ", err1, err2)
+	}
+	if _, err := PairSecret(ask, "zz", inv); err == nil {
+		t.Fatal("invalid peerPub accepted")
+	}
+}
+
+func TestEmptySecretPanics(t *testing.T) {
+	for _, f := range []func(){func() { MailboxKey(nil, 1) }, func() { VerifyCode(nil, "a", "b") }} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("no panic")
+				}
+			}()
+			f()
+		}()
+	}
+}
+
+func TestOpenTamperedInner(t *testing.T) {
+	isk, _ := newID(t)
+	msk, mpub := MailboxKey([]byte("s"), 1)
+	in := sealInner(t, isk, mpub, now())
+	in.Content = `{"type":"bye"}`
+	if _, _, _, err := Open(wrap(t, in, mpub), msk); err == nil {
+		t.Fatal("tampered inner accepted")
 	}
 }

@@ -29,6 +29,7 @@ var rtcAPI = newRTCAPI(nil)
 func newRTCAPI(tune func(*webrtc.SettingEngine)) *webrtc.API {
 	var se webrtc.SettingEngine
 	se.LoggerFactory = &logging.DefaultLoggerFactory{Writer: io.Discard, DefaultLogLevel: logging.LogLevelDisabled}
+	se.SetSCTPMaxMessageSize(512 << 10) // bounds what a peer can make us buffer; 64 KB text JSON-escaped fits
 	if tune != nil {
 		tune(&se)
 	}
@@ -210,6 +211,10 @@ func (n *Node) offer(peer string) {
 		return
 	}
 	n.mu.Lock()
+	if n.conns[peer] != c { // superseded while gathering
+		n.mu.Unlock()
+		return
+	}
 	ev := n.sealToLocked(peer, "offer", sdpMsg{SID: c.sid, SDP: sdp})
 	n.mu.Unlock()
 	n.publishFirst(ev, c.answered)
@@ -235,6 +240,10 @@ func (n *Node) answer(peer string, m sdpMsg) {
 		return
 	}
 	n.mu.Lock()
+	if n.conns[peer] != c { // superseded while gathering
+		n.mu.Unlock()
+		return
+	}
 	ev := n.sealToLocked(peer, "answer", sdpMsg{SID: m.SID, SDP: sdp})
 	n.mu.Unlock()
 	n.publish(ev)

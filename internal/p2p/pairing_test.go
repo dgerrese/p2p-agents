@@ -40,6 +40,7 @@ func newIdleNode(t *testing.T, bus *MemBus) *testNode {
 	if err != nil {
 		t.Fatal(err)
 	}
+	n.stun = nil // no public STUN once paired nodes start dialing
 	tn := &testNode{Node: n, st: st}
 	go func() {
 		for e := range n.Events() {

@@ -2,6 +2,7 @@ package p2p
 
 import (
 	"context"
+	"encoding/hex"
 	"strings"
 	"testing"
 	"time"
@@ -182,14 +183,14 @@ func TestReconnect(t *testing.T) {
 }
 
 func TestUnknownSenderDropped(t *testing.T) {
-	sa, _, aPub, bPub := pairedStores(t)
-	ps, _ := sa.Peers()
+	_, sb, aPub, _ := pairedStores(t)
+	ps, _ := sb.Peers()
 	bus := NewMemBus()
-	a := nodeOn(t, sa, bus)
-	// C guesses a secret, and C also knows the real A-B secret but is not B.
+	b := nodeOn(t, sb, bus) // B is the non-offerer: it would answer an offer from A
+	// C guesses a secret, and C also knows the real A-B secret but is not A.
 	for _, secret := range [][]byte{randBytes(32), ps[0].Secret} {
 		sc := &Store{Dir: t.TempDir()}
-		if err := sc.AddPeer(Peer{Pub: aPub, Name: "a", Secret: secret}); err != nil {
+		if err := sc.AddPeer(Peer{Pub: ps[0].Pub, Name: "b", Secret: secret}); err != nil {
 			t.Fatal(err)
 		}
 		c := nodeOn(t, sc, bus)
@@ -200,10 +201,13 @@ func TestUnknownSenderDropped(t *testing.T) {
 			}
 		}
 	}
-	run(t, a)
+	run(t, b)
 	time.Sleep(time.Second)
-	if a.connected.Load() != 0 || len(a.events()) != 0 || len(a.Peers()) != 1 || a.Peers()[0].Pub != bPub {
-		t.Fatalf("connected=%d events=%+v peers=%+v", a.connected.Load(), a.events(), a.Peers())
+	b.mu.Lock()
+	conns := len(b.conns)
+	b.mu.Unlock()
+	if conns != 0 || len(b.events()) != 0 || len(b.Peers()) != 1 || b.Peers()[0].Pub != aPub {
+		t.Fatalf("conns=%d events=%+v peers=%+v", conns, b.events(), b.Peers())
 	}
 }
 
@@ -243,6 +247,36 @@ func TestOversizeRejected(t *testing.T) {
 	_, b, aPub, _ := connectedPair(t)
 	if _, _, err := b.Send(context.Background(), aPub, strings.Repeat("x", 65<<10), ""); err == nil {
 		t.Fatal("65 KB send succeeded")
+	}
+}
+
+// TestIncomingRejected writes bad frames straight onto the channel, bypassing Send's checks.
+func TestIncomingRejected(t *testing.T) {
+	a, b, _, bPub := connectedPair(t)
+	for _, m := range []wireMsg{
+		{ID: hex.EncodeToString(randBytes(16)), Type: "msg", Text: strings.Repeat("x", 65<<10)},
+		{ID: "not-hex", Type: "msg", Text: "hi"},
+		{ID: hex.EncodeToString(randBytes(16)), Type: "msg", Text: "hi", ReplyTo: "../x"},
+	} {
+		ack := make(chan string, 1)
+		a.mu.Lock()
+		a.acks[m.ID] = ack
+		dc := a.conns[bPub].dc
+		a.mu.Unlock()
+		if err := sendWire(dc, m); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case s := <-ack:
+			if s != "failed" {
+				t.Fatalf("id %q: ack %q", m.ID, s)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("id %q: no ack", m.ID)
+		}
+	}
+	if n := b.count("message"); n != 0 {
+		t.Fatalf("B emitted %d message events", n)
 	}
 }
 

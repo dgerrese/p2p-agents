@@ -45,6 +45,19 @@ func sendWire(dc *webrtc.DataChannel, m wireMsg) error {
 	return dc.SendText(string(b))
 }
 
+// isMsgID reports whether s looks like our message IDs: 32 lowercase hex chars.
+func isMsgID(s string) bool {
+	if len(s) != 32 {
+		return false
+	}
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // fingerprint is the first 16 hex chars of pub in groups of 4.
 func fingerprint(pub string) string {
 	if len(pub) < 16 {
@@ -127,7 +140,7 @@ func (n *Node) onWire(peer string, dc *webrtc.DataChannel, data []byte) {
 	}
 	switch m.Type {
 	case "msg":
-		if len(m.Text) > maxText {
+		if len(m.Text) > maxText || !isMsgID(m.ID) || (m.ReplyTo != "" && !isMsgID(m.ReplyTo)) {
 			sendWire(dc, wireMsg{ID: m.ID, Type: "ack", Status: "failed", TS: now()})
 			return
 		}
@@ -173,9 +186,8 @@ func (n *Node) Unpair(peerPub, reason string) error {
 		for i := 0; i < 100 && dc.BufferedAmount() > 0; i++ { // let the bye leave before we close
 			time.Sleep(10 * time.Millisecond)
 		}
-	} else {
-		n.publish(ev) // ponytail: a lost bye leaves the peer knocking on a mailbox nobody reads; harmless
 	}
+	n.publish(ev) // also by envelope in case the wire bye is lost; the peer drops the second one
 	return n.removePeer(peerPub, reason)
 }
 
@@ -183,6 +195,9 @@ func (n *Node) Unpair(peerPub, reason string) error {
 func (n *Node) removePeer(peer, reason string) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	if _, ok := n.known[peer]; !ok { // already removed, e.g. our Unpair raced the peer's bye
+		return nil
+	}
 	if err := n.st.RemovePeer(peer); err != nil {
 		return err
 	}

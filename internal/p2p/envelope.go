@@ -24,7 +24,7 @@ const (
 
 var now = time.Now // injectable for tests
 
-// Payload Type: pair_req|pair_resp|pair_ok|pair_no|knock|offer|answer|bye
+// Payload Type: pair_req|pair_resp|pair_reveal|pair_ok|pair_no|knock|offer|answer|bye
 type Payload struct {
 	Type string          `json:"type"`
 	Data json.RawMessage `json:"data,omitempty"`

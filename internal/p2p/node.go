@@ -106,11 +106,10 @@ func (n *Node) Run(ctx context.Context) error {
 			n.handle(ev)
 		case <-tick.C:
 			n.mu.Lock()
-			rotate := Window(now()) != n.window
-			n.mu.Unlock()
-			if rotate {
-				n.resubscribe()
+			if n.pruneLocked() || Window(now()) != n.window {
+				n.resubscribeLocked()
 			}
+			n.mu.Unlock()
 		}
 	}
 }
@@ -131,7 +130,7 @@ func (n *Node) handle(ev nostr.Event) {
 		return
 	}
 	switch p.Type {
-	case "pair_req", "pair_resp", "pair_ok", "pair_no":
+	case "pair_req", "pair_resp", "pair_reveal", "pair_ok", "pair_no":
 		if b.peer == "" {
 			n.handlePair(tag[1], p, sender)
 		}
@@ -155,21 +154,36 @@ func (n *Node) resubscribe() error {
 	return n.resubscribeLocked()
 }
 
-// resubscribeLocked drops expired invites and recomputes the mailbox set:
+// pruneLocked drops expired invites and requests (emitting pair_failed) and reports whether any went.
+func (n *Node) pruneLocked() bool {
+	t, pruned := now(), false
+	for pub, inv := range n.invites {
+		if t.After(inv.expires) {
+			delete(n.invites, pub)
+			pruned = true
+		}
+	}
+	for id, r := range n.reqs {
+		if !t.Before(r.Expires) {
+			delete(n.reqs, id)
+			n.emitLocked(Event{Kind: "pair_failed", Peer: r.PeerPub, Name: r.PeerName, ID: id, Reason: "expired"})
+			pruned = true
+		}
+	}
+	return pruned
+}
+
+// resubscribeLocked prunes expired state and recomputes the mailbox set:
 // pending invites, pending pairing requests, and each peer's windows w-1..w+1.
 func (n *Node) resubscribeLocked() error {
 	peers, err := n.st.Peers()
 	if err != nil {
 		return err
 	}
-	t := now()
-	n.window = Window(t)
+	n.pruneLocked()
+	n.window = Window(now())
 	boxes := map[string]box{}
 	for pub, inv := range n.invites {
-		if t.After(inv.expires) {
-			delete(n.invites, pub)
-			continue
-		}
 		boxes[pub] = box{sk: inv.sk}
 	}
 	for _, r := range n.reqs {

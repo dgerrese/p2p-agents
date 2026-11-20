@@ -2,6 +2,7 @@ package p2p
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/nbd-wtf/go-nostr"
 )
 
 type testNode struct {
@@ -20,6 +23,14 @@ type testNode struct {
 
 func newTestNode(t *testing.T, bus *MemBus) *testNode {
 	t.Helper()
+	tn := newIdleNode(t, bus)
+	tn.start(t)
+	return tn
+}
+
+// newIdleNode builds a node whose Run loop is not started; envelopes queue in its signal.
+func newIdleNode(t *testing.T, bus *MemBus) *testNode {
+	t.Helper()
 	t.Setenv("P2PA_HOME", t.TempDir())
 	st, err := OpenStore()
 	if err != nil {
@@ -29,10 +40,6 @@ func newTestNode(t *testing.T, bus *MemBus) *testNode {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { n.Run(ctx); close(done) }()
-	t.Cleanup(func() { cancel(); <-done })
 	tn := &testNode{Node: n, st: st}
 	go func() {
 		for e := range n.Events() {
@@ -42,6 +49,13 @@ func newTestNode(t *testing.T, bus *MemBus) *testNode {
 		}
 	}()
 	return tn
+}
+
+func (tn *testNode) start(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { tn.Run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
 }
 
 func (tn *testNode) events() []Event {
@@ -259,5 +273,115 @@ func TestEventsNeverContainCode(t *testing.T) {
 		if strings.Contains(string(j), code) {
 			t.Fatalf("event leaks code: %s", j)
 		}
+	}
+}
+
+// TestConcurrentJoiners: B and C both join before A handles either; C must never bind to A.
+func TestConcurrentJoiners(t *testing.T) {
+	bus := NewMemBus()
+	a := newIdleNode(t, bus)
+	b, c := newTestNode(t, bus), newTestNode(t, bus)
+	code, err := a.Invite(time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bID, err := b.Join(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Join(code); err != nil {
+		t.Fatal(err)
+	}
+	a.start(t)
+	aID := a.waitEvent(t, "pair_request").ID
+	b.waitEvent(t, "pair_request")
+	accept(t, a, aID)
+	accept(t, b, bID)
+	a.waitEvent(t, "paired")
+	b.waitEvent(t, "paired")
+	time.Sleep(100 * time.Millisecond)
+	if len(c.events()) != 0 || len(c.Requests()) != 0 || len(c.peers(t)) != 0 {
+		t.Fatalf("C bound to A: events %+v", c.events())
+	}
+}
+
+// handJoin plays a joiner by hand against a and sends reveal(nB) as pair_reveal.
+func handJoin(t *testing.T, bus *MemBus, a *testNode, reveal func(nB []byte) []byte) {
+	t.Helper()
+	code, err := a.Invite(time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(code, invitePrefix))
+	var inv inviteCode
+	json.Unmarshal(raw, &inv)
+	jsk := nostr.GeneratePrivateKey()
+	jpub, _ := nostr.GetPublicKey(jsk)
+	sig := bus.Join()
+	defer sig.Close()
+	rsk, rpub := MailboxKey(inv.S, replyWindow)
+	sig.Subscribe([]string{rpub})
+	send := func(typ string, m pairMsg) {
+		d, _ := json.Marshal(m)
+		ev, err := Seal(Payload{Type: typ, Data: d}, jsk, inv.M)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sig.Publish(context.Background(), ev)
+	}
+	nB := randBytes(32)
+	commit := sha256.Sum256(nB)
+	send("pair_req", pairMsg{Name: "mallory", Commit: commit[:], MAC: pairMAC(inv.S, "req", jpub)})
+	ev, ok := recv(sig.Events(), 2*time.Second)
+	if !ok {
+		t.Fatal("no pair_resp")
+	}
+	p, apub, _, err := Open(ev, rsk)
+	if err != nil || p.Type != "pair_resp" {
+		t.Fatalf("got %v %v", p.Type, err)
+	}
+	if len(a.Requests()) != 0 {
+		t.Fatal("inviter shows request before reveal")
+	}
+	send("pair_reveal", pairMsg{Nonce: reveal(nB), MAC: pairMAC(inv.S, "reveal", jpub, apub)})
+	time.Sleep(100 * time.Millisecond)
+}
+
+func TestPairWrongReveal(t *testing.T) {
+	bus := NewMemBus()
+	a := newTestNode(t, bus)
+	handJoin(t, bus, a, func([]byte) []byte { return randBytes(32) })
+	if len(a.Requests()) != 0 || len(a.events()) != 0 || len(a.peers(t)) != 0 {
+		t.Fatalf("wrong reveal produced a request: %+v", a.events())
+	}
+	// Control: the same hand-played flow with the right nonce does surface a request.
+	handJoin(t, bus, a, func(nB []byte) []byte { return nB })
+	if len(a.Requests()) != 1 {
+		t.Fatal("correct reveal produced no request")
+	}
+	if e := a.waitEvent(t, "pair_request"); e.Name != "mallory" {
+		t.Fatalf("event %+v", e)
+	}
+}
+
+func TestPairRequestExpires(t *testing.T) {
+	bus := NewMemBus()
+	a, b := newTestNode(t, bus), newTestNode(t, bus)
+	aID, _ := pairUp(t, a, b)
+	a.mu.Lock()
+	a.reqs[aID].Expires = now().Add(-time.Second)
+	a.mu.Unlock()
+	a.resubscribe()
+	if e := a.waitEvent(t, "pair_failed"); e.ID != aID || e.Reason != "expired" {
+		t.Fatalf("event %+v", e)
+	}
+	if len(a.Requests()) != 0 {
+		t.Fatal("expired request still listed")
+	}
+}
+
+func TestCleanName(t *testing.T) {
+	if got := cleanName("Bob\x1b[31m\u202e\n" + strings.Repeat("x", 100)); got != "Bob[31m"+strings.Repeat("x", 57) {
+		t.Fatalf("got %q", got)
 	}
 }

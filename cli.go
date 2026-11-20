@@ -272,7 +272,7 @@ func resolvePeer(ps []p2p.PeerStatus, q string) (p2p.PeerStatus, error) {
 	}
 	var b strings.Builder
 	for _, p := range m {
-		fmt.Fprintf(&b, "\n  %q  %s", p.Name, p.Pub)
+		fmt.Fprintf(&b, "\n  \"%s\"  %s", quoteName(p.Name), p.Pub) // reaches the model via MCP tools
 	}
 	return p2p.PeerStatus{}, fmt.Errorf("%q matches several peers:%s", q, b.String())
 }

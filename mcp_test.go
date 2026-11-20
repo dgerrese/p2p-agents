@@ -274,17 +274,30 @@ func TestPairNotificationHasNoCode(t *testing.T) {
 	bus := p2p.NewMemBus()
 	var mu sync.Mutex
 	var codes []string
-	// the dialog is for the human: it sees the code and types it back
-	accept := func(_ context.Context, r mcp.ElicitationRequest) (*mcp.ElicitationResult, error) {
-		code := codeRE.FindString(r.Params.Message)
-		mu.Lock()
-		codes = append(codes, code)
-		mu.Unlock()
-		return &mcp.ElicitationResult{ElicitationResponse: mcp.ElicitationResponse{
-			Action: mcp.ElicitationResponseActionAccept, Content: map[string]any{"code": code}}}, nil
+	// The dialog is for the human: it shows a code to read to the other owner and takes
+	// the code that owner reads back. Each dialog hands its shown code to the other one.
+	aShows, bShows := make(chan string, 1), make(chan string, 1)
+	owner := func(show chan<- string, hear <-chan string) func(context.Context, mcp.ElicitationRequest) (*mcp.ElicitationResult, error) {
+		return func(ctx context.Context, r mcp.ElicitationRequest) (*mcp.ElicitationResult, error) {
+			code := codeRE.FindString(r.Params.Message)
+			mu.Lock()
+			codes = append(codes, code)
+			mu.Unlock()
+			select {
+			case show <- code:
+			default:
+			}
+			var typed string
+			select {
+			case typed = <-hear:
+			case <-time.After(10 * time.Second):
+			}
+			return &mcp.ElicitationResult{ElicitationResponse: mcp.ElicitationResponse{
+				Action: mcp.ElicitationResponseActionAccept, Content: map[string]any{"code": typed}}}, nil
+		}
 	}
-	ha := newHarness(t, testStore(t, "alice"), bus, accept)
-	hb := newHarness(t, testStore(t, "bob"), bus, accept)
+	ha := newHarness(t, testStore(t, "alice"), bus, owner(aShows, bShows))
+	hb := newHarness(t, testStore(t, "bob"), bus, owner(bShows, aShows))
 
 	out := ha.call(t, "pair_invite", nil)
 	invite := regexp.MustCompile(`p2pa1:\S+`).FindString(out)
@@ -305,12 +318,12 @@ func TestPairNotificationHasNoCode(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(codes) != 2 || codes[0] == "" || codes[0] != codes[1] {
+	if len(codes) != 2 || codes[0] == "" || codes[1] == "" || codes[0] == codes[1] {
 		t.Fatalf("elicited codes = %v", codes)
 	}
 	var sawRequest bool
 	for _, s := range append(ha.all(), hb.all()...) {
-		if strings.Contains(s, codes[0]) {
+		if strings.Contains(s, codes[0]) || strings.Contains(s, codes[1]) {
 			t.Fatalf("code leaked to the model: %q", s)
 		}
 		sawRequest = sawRequest || strings.HasPrefix(s, "Pairing request from")

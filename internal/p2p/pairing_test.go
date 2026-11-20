@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -104,9 +105,10 @@ func pairUp(t *testing.T, a, b *testNode) (aID, bID string) {
 	return aID, bID
 }
 
-func accept(t *testing.T, n *testNode, id string) {
+// accept plays n's owner: it types the code the peer's owner reads out (peer's shown code).
+func accept(t *testing.T, n *testNode, id string, peer *testNode, peerID string) {
 	t.Helper()
-	c, err := n.VerifyCodeFor(id)
+	c, err := peer.VerifyCodeFor(peerID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,14 +123,14 @@ func TestPairHappyPath(t *testing.T) {
 	aID, bID := pairUp(t, a, b)
 	ca, _ := a.VerifyCodeFor(aID)
 	cb, _ := b.VerifyCodeFor(bID)
-	if ca != cb || len(ca) != 6 {
-		t.Fatalf("codes differ: %q %q", ca, cb)
+	if ca == cb || len(ca) != 6 || len(cb) != 6 {
+		t.Fatalf("codes %q %q", ca, cb)
 	}
 	if rs := a.Requests(); len(rs) != 1 || rs[0].ID != aID || rs[0].PeerPub == "" {
 		t.Fatalf("A requests %+v", rs)
 	}
-	accept(t, a, aID)
-	accept(t, b, bID)
+	accept(t, a, aID, b, bID)
+	accept(t, b, bID, a, aID)
 	a.waitEvent(t, "paired")
 	b.waitEvent(t, "paired")
 	pa, pb := a.peers(t), b.peers(t)
@@ -160,11 +162,12 @@ func TestPairHappyPath(t *testing.T) {
 func TestPairWrongCode(t *testing.T) {
 	bus := NewMemBus()
 	a, b := newTestNode(t, bus), newTestNode(t, bus)
-	aID, _ := pairUp(t, a, b)
-	c, _ := a.VerifyCodeFor(aID)
+	aID, bID := pairUp(t, a, b)
+	c, _ := b.VerifyCodeFor(bID)
+	own, _ := a.VerifyCodeFor(aID)
 	wrong := "000000"
-	if c == wrong {
-		wrong = "000001"
+	for i := 1; wrong == c || wrong == own; i++ {
+		wrong = fmt.Sprintf("%06d", i)
 	}
 	for i := 0; i < 3; i++ {
 		if err := a.Accept(aID, wrong); !errors.Is(err, ErrWrongCode) {
@@ -187,11 +190,60 @@ func TestPairWrongCode(t *testing.T) {
 	}
 }
 
+// TestPairOwnCodeRejected: typing the code on your own screen proves nothing, so it fails on both sides.
+func TestPairOwnCodeRejected(t *testing.T) {
+	bus := NewMemBus()
+	a, b := newTestNode(t, bus), newTestNode(t, bus)
+	aID, bID := pairUp(t, a, b)
+	for _, s := range []struct {
+		n  *testNode
+		id string
+	}{{a, aID}, {b, bID}} {
+		own, _ := s.n.VerifyCodeFor(s.id)
+		if err := s.n.Accept(s.id, own); !errors.Is(err, ErrWrongCode) {
+			t.Fatalf("own code accepted: %v", err)
+		}
+	}
+	// the right codes still pair after one wasted try each
+	accept(t, a, aID, b, bID)
+	accept(t, b, bID, a, aID)
+	a.waitEvent(t, "paired")
+	b.waitEvent(t, "paired")
+}
+
+func TestPairCodesDiffer(t *testing.T) {
+	bus := NewMemBus()
+	a := newTestNode(t, bus)
+	for i := 0; i < 5; i++ {
+		b := newTestNode(t, bus)
+		code, err := a.Invite(time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bID, err := b.Join(code)
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, 2*time.Second, "codes on both sides", func() bool { return len(a.Requests()) == i+1 && len(b.Requests()) == 1 })
+		var aID string
+		for _, r := range a.Requests() {
+			if _, pub, _ := b.st.Identity(); r.PeerPub == pub {
+				aID = r.ID
+			}
+		}
+		ca, _ := a.VerifyCodeFor(aID)
+		cb, _ := b.VerifyCodeFor(bID)
+		if ca == cb || len(ca) != 6 || len(cb) != 6 {
+			t.Fatalf("pairing %d: codes %q %q", i, ca, cb)
+		}
+	}
+}
+
 func TestPairOneSidedAccept(t *testing.T) {
 	bus := NewMemBus()
 	a, b := newTestNode(t, bus), newTestNode(t, bus)
-	aID, _ := pairUp(t, a, b)
-	accept(t, a, aID)
+	aID, bID := pairUp(t, a, b)
+	accept(t, a, aID, b, bID)
 	time.Sleep(100 * time.Millisecond)
 	if len(a.peers(t)) != 0 || len(b.peers(t)) != 0 {
 		t.Fatal("paired with only one side accepting")
@@ -264,14 +316,15 @@ func TestEventsNeverContainCode(t *testing.T) {
 	bus := NewMemBus()
 	a, b := newTestNode(t, bus), newTestNode(t, bus)
 	aID, bID := pairUp(t, a, b)
-	code, _ := a.VerifyCodeFor(aID)
-	accept(t, a, aID)
-	accept(t, b, bID)
+	ca, _ := a.VerifyCodeFor(aID)
+	cb, _ := b.VerifyCodeFor(bID)
+	accept(t, a, aID, b, bID)
+	accept(t, b, bID, a, aID)
 	a.waitEvent(t, "paired")
 	b.waitEvent(t, "paired")
 	for _, e := range append(a.events(), b.events()...) {
 		j, _ := json.Marshal(e)
-		if strings.Contains(string(j), code) {
+		if strings.Contains(string(j), ca) || strings.Contains(string(j), cb) {
 			t.Fatalf("event leaks code: %s", j)
 		}
 	}
@@ -296,8 +349,8 @@ func TestConcurrentJoiners(t *testing.T) {
 	a.start(t)
 	aID := a.waitEvent(t, "pair_request").ID
 	b.waitEvent(t, "pair_request")
-	accept(t, a, aID)
-	accept(t, b, bID)
+	accept(t, a, aID, b, bID)
+	accept(t, b, bID, a, aID)
 	a.waitEvent(t, "paired")
 	b.waitEvent(t, "paired")
 	time.Sleep(100 * time.Millisecond)

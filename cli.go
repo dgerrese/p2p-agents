@@ -410,7 +410,7 @@ func promptAccept(ctx context.Context, api NodeAPI, id string, out io.Writer, r 
 		return errors.New("no such pending pairing request")
 	}
 	for tries := 0; tries < 3; tries++ {
-		fmt.Fprintf(out, "Pairing request from %q (fingerprint %s).\nCompare this code with the other owner: %s\nType the code to accept, or press Enter to reject: ", req.PeerName, p2p.Fingerprint(req.PeerPub), code)
+		fmt.Fprintf(out, "Pairing request from %q (fingerprint %s).\nRead this code to the other owner: %s\nType the code the other owner reads to you to accept, or press Enter to reject: ", req.PeerName, p2p.Fingerprint(req.PeerPub), code)
 		line, rerr := readLine(ctx, r)
 		if ctx.Err() != nil {
 			return errors.New("interrupted")

@@ -47,7 +47,7 @@ type invite struct {
 
 // pairReq is one pairing in progress.
 // Joiner B: pair_req{commit=H(nB)} -> pair_resp{nA} -> pair_reveal{nB}; inviter A checks H(nB)==commit.
-// The verify code is derived from sas = H("p2pa-sas"|S|nA|nB), so nobody can grind it offline.
+// The verify codes are derived from sas = H("p2pa-sas"|S|nA|nB), so nobody can grind them offline.
 type pairReq struct {
 	PairRequest
 	secret              []byte
@@ -91,6 +91,24 @@ func sasKey(secret, nA, nB []byte) []byte {
 	h.Write(nA)
 	h.Write(nB)
 	return h.Sum(nil)
+}
+
+// sideCode is the 6-digit code shown on one side, keyed by H(label|sas) so the two codes are independent.
+func sideCode(sas []byte, label, pubA, pubB string) string {
+	k := sha256.Sum256(append([]byte(label), sas...))
+	return VerifyCode(k[:], pubA, pubB)
+}
+
+// codesLocked returns the code this side shows and the code the other side shows.
+// The inviter shows code_I and the joiner shows code_J; each owner types the other's code,
+// so a correct entry proves the owners exchanged codes.
+func (n *Node) codesLocked(r *pairReq) (shown, other string) {
+	ci := sideCode(r.sas, "p2pa-code-inviter", n.pub, r.PeerPub)
+	cj := sideCode(r.sas, "p2pa-code-joiner", n.pub, r.PeerPub)
+	if r.commit != nil { // only the inviter holds the joiner's commit
+		return ci, cj
+	}
+	return cj, ci
 }
 
 func randBytes(n int) []byte {
@@ -209,7 +227,9 @@ func (n *Node) pendingLocked(id string) (*pairReq, error) {
 	return r, nil
 }
 
-// VerifyCodeFor is only for TTY/elicitation paths; never put its result in events or tool output.
+// VerifyCodeFor returns the code this side shows, for its owner to read to the other owner.
+// Accept wants the other side's code, never this one. Only for TTY/elicitation paths;
+// never put its result in events or tool output.
 func (n *Node) VerifyCodeFor(id string) (string, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -217,7 +237,8 @@ func (n *Node) VerifyCodeFor(id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return VerifyCode(r.sas, n.pub, r.PeerPub), nil
+	shown, _ := n.codesLocked(r)
+	return shown, nil
 }
 
 func (n *Node) Accept(id, typed string) error {
@@ -227,7 +248,7 @@ func (n *Node) Accept(id, typed string) error {
 		n.mu.Unlock()
 		return err
 	}
-	want := VerifyCode(r.sas, n.pub, r.PeerPub)
+	_, want := n.codesLocked(r) // the code the other owner reads out
 	if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(typed)), []byte(want)) != 1 {
 		r.tries++
 		if r.tries < maxCodeTries {

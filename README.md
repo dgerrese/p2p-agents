@@ -22,17 +22,19 @@ Without the flag the tools still work, but messages are only seen by calling `re
 
 ## Pairing
 
-Pairing is always decided by the owner, never by an agent. Both owners need a terminal, and the code is compared out of band (phone, voice, chat).
+Pairing is always decided by the owner, never by an agent. Both owners need a terminal, and the verify codes are exchanged out of band (phone, voice, chat).
 
 1. Owner A: `p2p-agents invite` prints a code starting with `p2pa1:` (valid 24 hours) and waits.
 2. Owner A gives the code to owner B over any channel.
 3. Owner B: `p2p-agents pair p2pa1:...` waits for A.
-4. Each side now shows a 6-digit verify code. Compare the two over a separate channel. They must match.
-5. Each owner types the code to accept. Enter alone rejects, and three wrong codes fail the request.
+4. Each side now shows its own 6-digit verify code, and the two codes differ. Each owner reads their code aloud or sends it to the other owner over a separate channel.
+5. Each owner types the code the other owner gave them to accept. Typing the code on your own screen fails. Enter alone rejects, and three wrong codes fail the request.
+
+Each side only accepts the other side's code, so a correct entry proves the two owners really exchanged codes, which is what stops a man in the middle.
 
 `accept` and `pair` refuse to run without an interactive TTY. That stops an agent's plain shell tool, but not an agent that wraps the command in a pseudo-terminal. See [Same-user limit](#same-user-limit).
 
-If a Claude Code session is already running with p2p-agents, it shows an in-session dialog (MCP elicitation) with the code and asks the owner to type it. Decline the dialog and use `p2p-agents accept <id>` in a terminal instead. If no dialog appears and no notification arrives, run `p2p-agents requests` in a terminal to see the request id, then `p2p-agents accept <id>`.
+If a Claude Code session is already running with p2p-agents, it shows an in-session dialog (MCP elicitation) with this side's code and asks the owner to type the code the other owner reads to them. Decline the dialog and use `p2p-agents accept <id>` in a terminal instead. If no dialog appears and no notification arrives, run `p2p-agents requests` in a terminal to see the request id, then `p2p-agents accept <id>`.
 
 Other commands: `whoami`, `name <name>` (up to 64 characters), `requests`, `accept <id>`, `reject <id>`, `peers`, `unpair <peer> [reason]`.
 

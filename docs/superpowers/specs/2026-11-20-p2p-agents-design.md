@@ -61,8 +61,8 @@ The owner picked A.
 
 1. **Invite.** Owner A runs `p2p-agents invite` (CLI) or asks their agent (MCP tool `pair_invite`). It prints an invite code containing a **one-time mailbox pubkey** (throwaway, not A's identity), a random one-time secret, an expiry (default 24h), and the relay list. A sends this to B out of band (chat, email).
 2. **Request.** Owner B runs `p2p-agents pair <code>` or pastes it to their agent (`pair_join`). B's instance sends a pairing request to the one-time mailbox: NIP-59 gift-wrapped (outer event signed by a throwaway key), NIP-44 encrypted, containing B's identity pubkey, display name, a signature by B's identity key, and an HMAC proving knowledge of the secret. A replies the same way with its identity pubkey and signature. Relays see only throwaway keys.
-3. **Verify.** Both sides derive a 6-digit verification code from (A pubkey, B pubkey, secret). Both owners see it.
-4. **Approve — owners only, never an agent.** Both owners must accept, by **typing the 6-digit code** (not y/n). Approval paths:
+3. **Verify.** Both sides derive two 6-digit verification codes from (A pubkey, B pubkey, secret, both nonces), one per side. Each owner sees only their own side's code and reads it to the other owner.
+4. **Approve — owners only, never an agent.** Both owners must accept, by **typing the 6-digit code the other owner reads to them** (not y/n, and not their own code), so a correct entry proves the owners exchanged codes. Approval paths:
    - MCP **elicitation** (Claude Code shows a dialog to the human; the model cannot answer it), or
    - CLI `p2p-agents accept <id>`, which **refuses unless stdin and stdout are an interactive TTY** (an agent's shell tool has no TTY) and reads the code from the terminal.
    The verification code is never written to non-TTY output, MCP tool results, or channel notifications, so the model never sees it. There is **no** MCP tool that accepts a pairing.

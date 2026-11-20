@@ -1,3 +1,4 @@
 .superpowers/
 /p2p-agents
 .claude/settings.local.json
+/dist/

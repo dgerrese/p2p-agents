@@ -80,6 +80,9 @@ func NewNode(st *Store, lan, relay Signal) (*Node, error) {
 	var sigs []Signal
 	for _, s := range []Signal{lan, relay} {
 		if s != nil {
+			if debugOn() {
+				s = debugWrap(s)
+			}
 			sigs = append(sigs, s)
 		}
 	}

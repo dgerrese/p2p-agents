@@ -31,7 +31,10 @@ func TestIdentityStable(t *testing.T) {
 	if err != nil || len(sk1) != 64 || len(pub1) != 64 {
 		t.Fatal(sk1, pub1, err)
 	}
-	sk2, pub2, _ := s.Identity()
+	sk2, pub2, err := s.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if sk1 != sk2 || pub1 != pub2 {
 		t.Fatal("identity changed")
 	}
@@ -45,7 +48,9 @@ func TestPeersRoundTrip(t *testing.T) {
 	if err := s.AddPeer(Peer{Pub: "aa", Name: "A", Secret: []byte{1, 2}, PairedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	s.AddPeer(Peer{Pub: "bb", Name: "B"})
+	if err := s.AddPeer(Peer{Pub: "bb", Name: "B"}); err != nil {
+		t.Fatal(err)
+	}
 	ps, _ := s.Peers()
 	if len(ps) != 2 || ps[0].Name != "A" || string(ps[0].Secret) != "\x01\x02" {
 		t.Fatalf("%+v", ps)
@@ -96,9 +101,15 @@ func TestLockExclusive(t *testing.T) {
 func TestLogSince(t *testing.T) {
 	s := newStore(t)
 	t0 := time.Now().Add(-time.Hour)
-	s.AppendLog(LogEntry{ID: "1", Peer: "aa", Dir: "in", Text: "old", TS: t0})
-	s.AppendLog(LogEntry{ID: "2", Peer: "aa", Dir: "out", Text: "new", ReplyTo: "1", TS: time.Now()})
-	s.AppendLog(LogEntry{ID: "3", Peer: "bb", Dir: "in", Text: "other", TS: time.Now()})
+	if err := s.AppendLog(LogEntry{ID: "1", Peer: "aa", Dir: "in", Text: "old", TS: t0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendLog(LogEntry{ID: "2", Peer: "aa", Dir: "out", Text: "new", ReplyTo: "1", TS: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendLog(LogEntry{ID: "3", Peer: "bb", Dir: "in", Text: "other", TS: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
 	es, err := s.ReadLog("aa", t0.Add(time.Minute))
 	if err != nil || len(es) != 1 || es[0].ID != "2" || es[0].ReplyTo != "1" {
 		t.Fatalf("%+v %v", es, err)

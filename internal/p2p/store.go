@@ -30,13 +30,24 @@ func OpenStore() (*Store, error) {
 	return &Store{Dir: dir}, nil
 }
 
-// writeFile writes atomically via temp file + rename.
+// writeFile writes atomically via a unique 0600 temp file, then chmod and rename.
 func writeFile(path string, data []byte, perm os.FileMode) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, perm); err != nil {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	defer os.Remove(f.Name()) // no-op after successful rename
+	_, err = f.Write(data)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(f.Name(), perm)
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
 // Identity returns the hex secret and public key, generating them on first use.

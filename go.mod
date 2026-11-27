@@ -10,7 +10,7 @@ require (
 	github.com/mark3labs/mcp-go v1.6.0
 	github.com/nbd-wtf/go-nostr v0.52.3
 	github.com/pion/logging v0.2.4
-	github.com/pion/webrtc/v4 v4.2.27
+	github.com/pion/webrtc/v4 v4.2.29
 	golang.org/x/net v0.63.0
 	golang.org/x/term v0.48.0
 )
